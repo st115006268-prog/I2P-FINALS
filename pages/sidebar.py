@@ -1,6 +1,6 @@
 import flet as ft
-from theme import PRIMARY_TEAL, LIGHT_TEAL, TEXT_DARK, TEXT_GREY, BORDER_COLOR
-
+# Pastikan Anda mengimpor warna dari theme.py sesuai kebutuhan
+from theme import PRIMARY_TEAL, TEXT_GREY, TEXT_DARK, LIGHT_TEAL, BORDER_COLOR
 
 def build_sidebar(active_tab: str, switch_tab) -> ft.Column:
     def nav_item(icon, text, tab_name, badges=None):
@@ -61,10 +61,14 @@ def build_sidebar(active_tab: str, switch_tab) -> ft.Column:
             bgcolor=PRIMARY_TEAL,
             width=float("inf"),
             style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8), padding=16),
-            on_click=lambda _: switch_tab("ai"),
+            # DIUBAH: Menggunakan "assistant" agar cocok dengan ARCADIA.py
+            on_click=lambda _: switch_tab("assistant"), 
         ),
         ft.Divider(height=24, color=ft.Colors.TRANSPARENT),
-        nav_item(ft.Icons.AUTO_AWESOME, "AI Assistant", "ai"),
+        
+        # DIUBAH: Menggunakan "assistant" agar cocok dengan ARCADIA.py
+        nav_item(ft.Icons.AUTO_AWESOME, "AI Assistant", "assistant"),
+        
         nav_item(ft.Icons.STYLE, "Flashcards", "flashcards"),
         nav_item(ft.Icons.CALENDAR_TODAY, "Study planner", "planner", badges="To-do · Calendar"),
         nav_item(ft.Icons.TIMER, "Study timer", "timer"),
