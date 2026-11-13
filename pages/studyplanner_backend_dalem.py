@@ -637,6 +637,41 @@ def main(page: ft.Page):
 
     render()
 
-
+def get_view(page: ft.Page) -> ft.View:
+    # Clear any existing controls temporarily so main() can build onto a clean slate
+    old_controls = list(page.controls)
+    page.controls.clear()
+    
+    # Run the file's existing main() setup
+    main(page)
+    
+    # Capture what main() added to page, then restore page.controls
+    view_controls = list(page.controls)
+    page.controls.clear()
+    page.controls.extend(old_controls)
+    
+    return ft.View(
+        route=page.route,
+        padding=0,
+        controls=view_controls,
+    )
+def get_view(page: ft.Page) -> ft.View:
+    # Clear any existing controls temporarily so main() can build onto a clean slate
+    old_controls = list(page.controls)
+    page.controls.clear()
+    
+    # Run the file's existing main() setup
+    main(page)
+    
+    # Capture what main() added to page, then restore page.controls
+    view_controls = list(page.controls)
+    page.controls.clear()
+    page.controls.extend(old_controls)
+    
+    return ft.View(
+        route=page.route,
+        padding=0,
+        controls=view_controls,
+    )
 if __name__ == "__main__":
     ft.run(main)

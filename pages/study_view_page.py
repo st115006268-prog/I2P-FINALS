@@ -192,3 +192,30 @@ def build_ai_study_view(switch_tab) -> ft.Container:
             scroll=ft.ScrollMode.AUTO,
         ),
     )
+
+from pages.sidebar import build_sidebar
+
+def get_view(page: ft.Page) -> ft.View:
+    route_map = {
+        "assistant": "/ai-assistant",
+        "flashcards": "/flashcards",
+        "planner": "/studyplanner",
+        "timer": "/studytimer",
+        "profile": "/profile",
+    }
+    switch_tab = lambda tab: page.push_route(route_map.get(tab, "/"))
+
+    return ft.View(
+        route="/studyview",
+        padding=0,
+        controls=[
+            ft.Row(
+                [
+                    ft.Container(width=260, padding=20, content=build_sidebar("flashcards", switch_tab)),
+                    build_ai_study_view(switch_tab),
+                ],
+                expand=True,
+                spacing=0,
+            )
+        ],
+    )

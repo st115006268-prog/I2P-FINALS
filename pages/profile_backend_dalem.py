@@ -86,6 +86,14 @@ def build_sidebar(page: ft.Page):
     selected = {"label": "Profile"}
     nav_column = ft.Column(spacing=4)
 
+    route_map = {
+        "AI Assistant": "/ai-assistant",
+        "Flashcards": "/flashcards",
+        "Study planner": "/studyplanner",
+        "Study timer": "/studytimer",
+        "Profile": "/profile",
+    }
+
     def nav_icon(icon, active):
         if icon == "profile":
             return ft.Container(
@@ -94,6 +102,15 @@ def build_sidebar(page: ft.Page):
                 content=ft.Container(width=7, height=10, bgcolor=WHITE, border_radius=1.5),
             )
         return ft.Icon(icon, size=22, color="#4B5563")
+
+    async def select(label):
+        target = route_map.get(label)
+        if target and target != page.route:
+            await page.push_route(target)
+        else:
+            selected["label"] = label
+            render_nav()
+            nav_column.update()
 
     def render_nav():
         nav_column.controls.clear()
@@ -117,17 +134,12 @@ def build_sidebar(page: ft.Page):
                 padding=ft.Padding.only(left=16, right=12),
                 border_radius=12,
                 bgcolor=TEAL_SOFT if active else None,
-                on_click=lambda e, l=label: select(l),
+                on_click=lambda e, l=label: page.run_task(select, l),
                 data=label,
             )
             if not active:
                 hover_fill(item, None, "#F3F6F7")
             nav_column.controls.append(item)
-
-    def select(label):
-        selected["label"] = label
-        render_nav()
-        nav_column.update()
 
     render_nav()
 
@@ -169,6 +181,7 @@ def build_sidebar(page: ft.Page):
         ),
         height=52, bgcolor=TEAL, border_radius=12,
         shadow=ft.BoxShadow(blur_radius=10, color="#2216756A", offset=ft.Offset(0, 3)),
+        on_click=lambda e: page.run_task(page.push_route, "/ai-assistant"),
     )
     hover_fill(new_chat_btn, TEAL, TEAL_DARK)
 
@@ -229,7 +242,7 @@ def build_sidebar(page: ft.Page):
 
 
 # ---------------------------------------------------------------- main area
-def hero_card():
+def hero_card(page: ft.Page):
     avatar = ft.Container(
         width=100, height=100, border_radius=50, bgcolor=WHITE,
         alignment=ft.Alignment.CENTER,
@@ -241,17 +254,22 @@ def hero_card():
         ),
     )
 
+    async def handle_logout(e):
+        await page.push_route("/")
+
     edit_btn = ft.Container(
         content=txt("Edit profile", 16, WHITE, ft.FontWeight.W_600),
         height=48, padding=ft.Padding.symmetric(horizontal=18),
         bgcolor=TEAL, border_radius=10, alignment=ft.Alignment.CENTER,
     )
     hover_fill(edit_btn, TEAL, TEAL_DARK)
+
     logout_btn = ft.Container(
         content=txt("Log out", 16, DANGER, ft.FontWeight.W_500),
         height=48, padding=ft.Padding.symmetric(horizontal=19),
         bgcolor=WHITE, border_radius=10, alignment=ft.Alignment.CENTER,
         border=ft.Border.all(1, DANGER_BORDER),
+        on_click=handle_logout,
     )
     hover_fill(logout_btn, WHITE, "#FDF3F2")
 
@@ -431,7 +449,7 @@ def daily_goal_card(done=65, goal=90):
     )
 
 
-def build_main():
+def build_main(page: ft.Page):
     header = ft.Container(
         content=ft.Column(
             [txt("Profile", 24, INK, ft.FontWeight.W_600, spacing=-0.3),
@@ -448,7 +466,7 @@ def build_main():
             ft.Container(
                 content=ft.Column(
                     [
-                        hero_card(),
+                        hero_card(page),
                         ft.Row(
                             [stat_card("7", "Study sessions", "This week"),
                              stat_card("4.5h", "Focus time", "This week"),
@@ -473,7 +491,7 @@ def build_main():
                     ],
                     spacing=24,
                 ),
-                padding=ft.Padding.only(left=48, right=48, top=4, bottom=40),
+                padding=ft.Padding.only(left=48, right=48, top=24, bottom=40),
             )
         ],
         scroll=ft.ScrollMode.AUTO,
@@ -506,11 +524,27 @@ def main(page: ft.Page):
 
     page.add(
         ft.Row(
-            [build_sidebar(page), build_main()],
+            [build_sidebar(page), build_main(page)],
             spacing=0,
             expand=True,
             vertical_alignment=ft.CrossAxisAlignment.STRETCH,
         )
+    )
+
+
+def get_view(page: ft.Page) -> ft.View:
+    return ft.View(
+        route="/profile",
+        padding=0,
+        bgcolor=WHITE,
+        controls=[
+            ft.Row(
+                [build_sidebar(page), build_main(page)],
+                spacing=0,
+                expand=True,
+                vertical_alignment=ft.CrossAxisAlignment.STRETCH,
+            )
+        ],
     )
 
 

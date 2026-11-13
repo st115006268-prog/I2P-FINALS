@@ -82,7 +82,7 @@ def hover_bg(normal: str | None, hover: str):
 
 # ---------------------------------------------------------------- app
 class ArcadiaApp:
-    def __init__(self, page: ft.Page):
+    def __init__(self, page: ft.Page, auto_mount: bool = True):
         self.page = page
         self.store = backend.ChatStore()
         self.current = self.store.chats[0]
@@ -130,15 +130,17 @@ class ArcadiaApp:
         self.messages_box = ft.Container(content=self.messages, width=CONTENT_MAX_W,
                                          padding=ft.Padding.only(top=32, bottom=16))
 
-        page.add(
-            ft.Row(
-                [self._sidebar(), self._main()],
-                spacing=0, expand=True,
-                vertical_alignment=ft.CrossAxisAlignment.STRETCH,
-            )
+        self.root_row = ft.Row(
+            [self._sidebar(), self._main()],
+            spacing=0, expand=True,
+            vertical_alignment=ft.CrossAxisAlignment.STRETCH,
         )
+
+        if auto_mount:
+            page.add(self.root_row)
+
         self._render_chats()
-        self._on_resize()
+        self._on_resize(update=auto_mount)
 
     # ------------------------------------------------------------ sidebar
     def _sidebar(self) -> ft.Control:
@@ -222,7 +224,7 @@ class ArcadiaApp:
                     ft.Container(height=52),
                     text("RECENT CHATS", 14, MUTED, ft.FontWeight.W_600),
                     ft.Container(height=9),
-                    self.chat_list,  # fills the free space and scrolls when short
+                    self.chat_list,
                     ft.Container(height=8),
                     user_card,
                 ],
@@ -397,13 +399,14 @@ class ArcadiaApp:
         )
 
     # ------------------------------------------------------------ rendering
-    def _on_resize(self, e=None) -> None:
+    def _on_resize(self, e=None, update: bool = True) -> None:
         """Keep the content column centred with a max width, like CSS max-width."""
         width = (self.page.width or 1918) - SIDEBAR_W - 32
         w = max(320, min(CONTENT_MAX_W, width))
         self.bottom.width = w
         self.messages_box.width = w
-        self.page.update()
+        if update:
+            self.page.update()
 
     def _render_chats(self) -> None:
         self.chat_list.controls = [self._chat_row(c) for c in self.store.chats]
@@ -472,11 +475,19 @@ class ArcadiaApp:
         self.page.run_task(self.input.focus)
 
 
+def get_view(page: ft.Page) -> ft.View:
+    app = ArcadiaApp(page, auto_mount=False)
+    return ft.View(
+        route="/ai-assistant",
+        padding=0,
+        bgcolor=BG,
+        controls=[app.root_row],
+    )
+
+
 async def main(page: ft.Page) -> None:
     app = ArcadiaApp(page)
 
-    # Dev helper: `python arcadia_flet.py --screenshot out.png [message]`
-    # grabs the window from the screen (needs PySide6) and exits.
     if "--screenshot" in sys.argv:
         import asyncio
         args = sys.argv[sys.argv.index("--screenshot") + 1:]

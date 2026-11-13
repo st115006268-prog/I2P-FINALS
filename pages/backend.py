@@ -72,7 +72,6 @@ def assistant_reply(text: str) -> str:
     )
 
 """Arcadia backend: chat data and assistant replies (no UI code here)."""
-from __future__ import annotations
 
 import itertools
 from dataclasses import dataclass, field
