@@ -1,8 +1,8 @@
 """Arcadia - Study timer page (front end only), built with Flet.
 
 Requirements:  pip install flet
-Run:           python study_timer.py          (desktop window)
-               flet run --web study_timer.py  (in the browser)
+Run:           python studytimer_backend_dalem.py          (desktop window)
+               flet run --web studytimer_backend_dalem.py  (in the browser)
 """
 import asyncio
 
@@ -51,7 +51,7 @@ def logo(size: int = 44) -> ft.Container:
     )
 
 
-def hoverable(container: ft.Container, normal: str, hover: str) -> ft.Container:
+def hoverable(container: ft.Container, normal: str | None, hover: str) -> ft.Container:
     def on_hover(e):
         container.bgcolor = hover if e.data in (True, "true") else normal
         container.update()
@@ -60,7 +60,7 @@ def hoverable(container: ft.Container, normal: str, hover: str) -> ft.Container:
 
 
 def nav_item(label: str, icon, active: bool = False, badge: str | None = None,
-             icon_control: ft.Control | None = None) -> ft.Container:
+             icon_control: ft.Control | None = None, on_click=None) -> ft.Container:
     color = PRIMARY if active else TEXT
     row = [
         icon_control or ft.Icon(icon, size=21, color=PRIMARY if active else "#3C6F69"),
@@ -78,12 +78,18 @@ def nav_item(label: str, icon, active: bool = False, badge: str | None = None,
         content=ft.Row(row, spacing=12),
         height=53, padding=ft.Padding.symmetric(horizontal=15),
         border_radius=10, bgcolor=normal,
+        on_click=on_click,
+        ink=on_click is not None,
     ), normal, PRIMARY_SOFT if active else "#F3F6F5")
 
 
 def build_sidebar(page: ft.Page) -> ft.Container:
     chats = ["New study chat", "What is E=mc²?", "Help with my I2P questions"]
     chat_column = ft.Column(spacing=0)
+
+    def go(route: str):
+        if page.route != route:
+            page.run_task(page.push_route, route)
 
     def render_chats():
         chat_column.controls = [chat_row(i, t) for i, t in enumerate(chats)]
@@ -96,6 +102,8 @@ def build_sidebar(page: ft.Page) -> ft.Container:
     def chat_row(index: int, title: str) -> ft.Container:
         return hoverable(ft.Container(
             height=50, padding=ft.Padding.symmetric(horizontal=15), border_radius=8,
+            on_click=lambda _: go("/ai-assistant"),
+            ink=True,
             content=ft.Row([
                 ft.Icon(ft.Icons.CHAT_BUBBLE_OUTLINE, size=20, color=TEXT_MUTED),
                 ft.Text(title, size=16, color=TEXT_MUTED, expand=True,
@@ -118,6 +126,7 @@ def build_sidebar(page: ft.Page) -> ft.Container:
     new_chat_btn = hoverable(ft.Container(
         height=53, bgcolor=PRIMARY, border_radius=10, alignment=ft.Alignment.CENTER,
         on_click=new_chat,
+        ink=True,
         content=ft.Row([
             ft.Icon(ft.Icons.ADD, color=SURFACE, size=22),
             ft.Text("New study chat", color=SURFACE, size=16, weight=ft.FontWeight.W_600),
@@ -126,6 +135,8 @@ def build_sidebar(page: ft.Page) -> ft.Container:
 
     user_card = hoverable(ft.Container(
         padding=16, border=ft.Border.all(1, BORDER), border_radius=12,
+        on_click=lambda _: go("/profile"),
+        ink=True,
         content=ft.Row([
             ft.Container(
                 width=42, height=42, border_radius=21, bgcolor="#EEF0F2",
@@ -154,11 +165,12 @@ def build_sidebar(page: ft.Page) -> ft.Container:
             ft.Container(height=22),
             new_chat_btn,
             ft.Container(height=22),
-            nav_item("AI Assistant", ft.Icons.AUTO_AWESOME),
-            nav_item("Flashcards", ft.Icons.LAYERS_OUTLINED),
-            nav_item("Study planner", ft.Icons.CALENDAR_MONTH_OUTLINED, badge="To-do · Calendar"),
+            nav_item("AI Assistant", ft.Icons.AUTO_AWESOME, on_click=lambda _: go("/ai-assistant")),
+            nav_item("Flashcards", ft.Icons.LAYERS_OUTLINED, on_click=lambda _: go("/flashcards")),
+            nav_item("Study planner", ft.Icons.CALENDAR_MONTH_OUTLINED, badge="To-do · Calendar",
+                     on_click=lambda _: go("/studyplanner")),
             nav_item("Study timer", ft.Icons.TIMER_OUTLINED, active=True),
-            nav_item("Profile", None, icon_control=logo(20)),
+            nav_item("Profile", None, icon_control=logo(20), on_click=lambda _: go("/profile")),
             ft.Container(
                 padding=ft.Padding.only(left=15, top=8),
                 content=ft.Row([
@@ -188,106 +200,125 @@ class StudyTimer:
 
         # --- controls ---
         self.pill_text = ft.Text("FOCUS", size=13, weight=ft.FontWeight.BOLD, color=PRIMARY)
+        self.time_text = ft.Text(fmt(self.remaining), size=72, weight=ft.FontWeight.BOLD, color=TEXT)
+        self.sub_text = ft.Text(f"of {self.minutes} min", size=16, color=TEXT_MUTED)
         self.ring = ft.ProgressRing(
-            value=1.0, width=298, height=298, stroke_width=14,
+            value=1.0, width=290, height=290, stroke_width=6,
             color=PRIMARY, bgcolor=RING_TRACK, stroke_cap=ft.StrokeCap.ROUND,
         )
-        self.time_text = ft.Text(fmt(self.remaining), size=72, weight=ft.FontWeight.W_600, color=TEXT)
-        self.session_text = ft.Text("25 minutes session", size=13, color="#4B5563")
 
-        self.preset_buttons: dict[int, ft.Container] = {}
+        self.start_icon = ft.Icon(ft.Icons.PLAY_ARROW, color=SURFACE, size=24)
+        self.start_label = ft.Text("Start", color=SURFACE, size=18, weight=ft.FontWeight.W_600)
+        self.start_btn = ft.Container(
+            width=150, height=58, bgcolor=PRIMARY, border_radius=12,
+            alignment=ft.Alignment.CENTER,
+            shadow=ft.BoxShadow(blur_radius=8, color="#1A000000", offset=ft.Offset(0, 2)),
+            on_click=lambda _: self.toggle(),
+            content=ft.Row([self.start_icon, self.start_label],
+                           alignment=ft.MainAxisAlignment.CENTER, spacing=6),
+        )
+        self.reset_btn = ft.Container(
+            width=125, height=58, bgcolor=SURFACE,
+            border=ft.Border.all(1.2, INPUT_BORDER), border_radius=12,
+            alignment=ft.Alignment.CENTER,
+            on_click=lambda _: self.reset(),
+            content=ft.Row([
+                ft.Icon(ft.Icons.REFRESH, color=TEXT_MUTED, size=21),
+                ft.Text("Reset", color=TEXT_MUTED, size=18, weight=ft.FontWeight.W_500),
+            ], alignment=ft.MainAxisAlignment.CENTER, spacing=6),
+        )
+
+        self.preset_buttons: dict[int, tuple[ft.Container, ft.Text]] = {}
         for m in PRESETS:
-            self.preset_buttons[m] = ft.Container(
-                expand=True, height=46, border_radius=9, alignment=ft.Alignment.CENTER,
-                on_click=lambda _, m=m: self.set_duration(m),
-                content=ft.Text(f"{m} min", size=13, weight=ft.FontWeight.W_600),
+            lbl = ft.Text(f"{m} min", size=16, weight=ft.FontWeight.W_500)
+            btn = ft.Container(
+                width=105, height=50, border_radius=12, alignment=ft.Alignment.CENTER,
+                on_click=lambda _, mins=m: self.set_duration(mins), content=lbl,
             )
+            self.preset_buttons[m] = (btn, lbl)
 
         self.custom = ft.TextField(
-            hint_text="Minutes", expand=True, height=48, text_size=14,
+            hint_text="Min", hint_style=ft.TextStyle(color="#9CA3AF", size=15),
+            width=145, height=50, text_size=15, color=TEXT,
             keyboard_type=ft.KeyboardType.NUMBER,
-            border_color=INPUT_BORDER, focused_border_color=PRIMARY, border_radius=9,
+            input_filter=ft.NumbersOnlyInputFilter(),
+            border_color=INPUT_BORDER, focused_border_color=PRIMARY, border_radius=10,
             content_padding=ft.Padding.symmetric(horizontal=14, vertical=12),
-            on_change=lambda _: self.refresh(), on_submit=lambda _: self.set_custom(),
+            on_submit=lambda _: self.apply_custom(),
         )
-        self.set_btn_text = ft.Text("Set timer", size=16, weight=ft.FontWeight.W_500)
-        self.set_btn = ft.Container(
-            width=107, height=48, border_radius=9, bgcolor=PRIMARY_SOFT,
-            alignment=ft.Alignment.CENTER, content=self.set_btn_text,
-            on_click=lambda _: self.set_custom(),
-        )
+        self.set_btn = hoverable(ft.Container(
+            width=82, height=50, bgcolor=PRIMARY_SOFT, border_radius=10,
+            alignment=ft.Alignment.CENTER, on_click=lambda _: self.apply_custom(),
+            content=ft.Text("Set", size=16, weight=ft.FontWeight.W_600, color=PRIMARY_SOFT_TEXT),
+        ), PRIMARY_SOFT, "#D4EAE4")
+        self.hint = ft.Text(DEFAULT_HINT, size=15, color=TEXT_MUTED)
 
-        self.start_text = ft.Text("Start focus", size=16, weight=ft.FontWeight.W_600, color=SURFACE)
-        self.start_btn = hoverable(ft.Container(
-            width=168, height=48, bgcolor=PRIMARY, border_radius=10,
-            alignment=ft.Alignment.CENTER, content=self.start_text,
-            on_click=lambda _: self.toggle(),
-        ), PRIMARY, PRIMARY_HOVER)
-        self.reset_btn = ft.Container(
-            content=ft.Text("Reset", size=16, color="#4B5563"),
-            padding=8, on_click=lambda _: self.set_duration(self.minutes),
-        )
-        self.hint = ft.Text(DEFAULT_HINT, size=16, color=TEXT_MUTED, text_align=ft.TextAlign.CENTER)
+        self.sync_presets()
 
-        self.refresh(update=False)
-
-    # --- layout ---
     def build(self) -> ft.Container:
+        pill = ft.Container(
+            bgcolor=PRIMARY_SOFT, border_radius=999,
+            padding=ft.Padding.symmetric(horizontal=18, vertical=7),
+            content=self.pill_text,
+        )
+        dial = ft.Stack([
+            self.ring,
+            ft.Container(
+                width=290, height=290, alignment=ft.Alignment.CENTER,
+                content=ft.Column([pill, self.time_text, self.sub_text],
+                                  alignment=ft.MainAxisAlignment.CENTER,
+                                  horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=2),
+            ),
+        ], width=290, height=290)
+
         return ft.Container(
-            width=622, bgcolor=SURFACE, border_radius=22,
-            border=ft.Border.all(1, "#ECEEF1"),
-            padding=ft.Padding.only(left=50, right=50, top=48, bottom=50),
-            shadow=ft.BoxShadow(blur_radius=3, color="#0A101828", offset=ft.Offset(0, 1)),
+            width=580, bgcolor=SURFACE,
+            border=ft.Border.all(1, BORDER), border_radius=20,
+            padding=ft.Padding.symmetric(horizontal=44, vertical=44),
             content=ft.Column([
-                ft.Container(
-                    content=self.pill_text, bgcolor=PRIMARY_SOFT, border_radius=999,
-                    padding=ft.Padding.symmetric(horizontal=16, vertical=7),
-                ),
-                ft.Container(height=14),
-                ft.Stack([
-                    ft.Container(self.ring, padding=7),
-                    ft.Container(
-                        width=312, height=312, alignment=ft.Alignment.CENTER,
-                        content=ft.Column([self.time_text, self.session_text],
-                                          spacing=0, tight=True,
-                                          horizontal_alignment=ft.CrossAxisAlignment.CENTER),
-                    ),
-                ], width=312, height=312),
+                dial,
+                ft.Container(height=28),
+                ft.Row([self.start_btn, self.reset_btn],
+                       alignment=ft.MainAxisAlignment.CENTER, spacing=16),
+                ft.Container(height=34),
+                ft.Divider(height=1, thickness=1, color=BORDER),
+                ft.Container(height=26),
+                ft.Text("PRESET DURATIONS", size=14, weight=ft.FontWeight.W_600, color=TEXT_MUTED),
                 ft.Container(height=16),
-                ft.Row(list(self.preset_buttons.values()), spacing=10),
-                ft.Container(height=10),
-                ft.Row([ft.Text("Custom duration", size=13, weight=ft.FontWeight.W_600, color=TEXT)]),
-                ft.Row([self.custom, self.set_btn], spacing=10),
-                ft.Container(height=12),
-                ft.Row([self.start_btn, self.reset_btn], spacing=26,
-                       alignment=ft.MainAxisAlignment.CENTER),
-                ft.Container(height=14),
+                ft.Row([b for b, _ in self.preset_buttons.values()],
+                       alignment=ft.MainAxisAlignment.CENTER, spacing=12),
+                ft.Container(height=22),
+                ft.Row([
+                    ft.Text("Custom length:", size=16, color="#4B5563"),
+                    self.custom, self.set_btn,
+                ], alignment=ft.MainAxisAlignment.CENTER, spacing=12),
+                ft.Container(height=24),
                 self.hint,
-            ], spacing=8, tight=True, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
+            ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=0),
         )
 
-    # --- behaviour ---
-    def refresh(self, update: bool = True):
+    # --- state updates ---
+    def sync_presets(self):
+        for m, (btn, lbl) in self.preset_buttons.items():
+            selected = m == self.minutes
+            btn.bgcolor = PRIMARY_SOFT if selected else SURFACE
+            btn.border = ft.Border.all(1.5 if selected else 1.2,
+                                       PRIMARY if selected else INPUT_BORDER)
+            lbl.color = PRIMARY if selected else TEXT
+            lbl.weight = ft.FontWeight.W_600 if selected else ft.FontWeight.W_500
+
+    def refresh(self):
         self.time_text.value = fmt(self.remaining)
+        self.sub_text.value = f"of {self.minutes} min"
         self.ring.value = self.remaining / self.total if self.total else 0
-        self.session_text.value = f"{self.minutes} minutes session"
-        if self.running:
-            self.start_text.value = "Pause"
-        elif 0 < self.remaining < self.total:
-            self.start_text.value = "Resume"
-        else:
-            self.start_text.value = "Start focus"
-
-        for m, btn in self.preset_buttons.items():
-            active = m == self.minutes
-            btn.bgcolor = PRIMARY_SOFT if active else SURFACE
-            btn.border = ft.Border.all(1, PRIMARY if active else INPUT_BORDER)
-            btn.content.color = PRIMARY if active else "#374151"
-
-        has_value = bool((self.custom.value or "").strip())
-        self.set_btn_text.color = PRIMARY if has_value else PRIMARY_SOFT_TEXT
-        if update:
-            self.page.update()
+        self.start_icon.name = ft.Icons.PAUSE if self.running else ft.Icons.PLAY_ARROW
+        self.start_label.value = "Pause" if self.running else (
+            "Resume" if 0 < self.remaining < self.total else "Start"
+        )
+        self.start_btn.bgcolor = PRIMARY_HOVER if self.running else PRIMARY
+        if self.remaining > 0:
+            self.pill_text.value = "FOCUSING" if self.running else "FOCUS"
+        self.page.update()
 
     def notify(self, message: str):
         self.page.show_dialog(ft.SnackBar(ft.Text(message)))
@@ -296,19 +327,22 @@ class StudyTimer:
         self.running = False
         self.minutes = minutes
         self.total = self.remaining = minutes * 60
-        self.pill_text.value = "FOCUS"
+        self.hint.value = DEFAULT_HINT
+        self.sync_presets()
+        self.refresh()
+
+    def reset(self):
+        self.running = False
+        self.remaining = self.total
         self.hint.value = DEFAULT_HINT
         self.refresh()
 
-    def set_custom(self):
-        try:
-            minutes = int(float(self.custom.value))
-        except (TypeError, ValueError):
-            self.notify("Enter a number of minutes")
+    def apply_custom(self):
+        raw = (self.custom.value or "").strip()
+        if not raw.isdigit() or not (1 <= int(raw) <= MAX_MINUTES):
+            self.notify(f"Enter a number between 1 and {MAX_MINUTES} minutes.")
             return
-        if not 1 <= minutes <= MAX_MINUTES:
-            self.notify(f"Pick between 1 and {MAX_MINUTES} minutes")
-            return
+        minutes = int(raw)
         self.custom.value = ""
         self.set_duration(minutes)
 
@@ -322,6 +356,9 @@ class StudyTimer:
     async def tick_loop(self):
         while True:
             await asyncio.sleep(1)
+            if self.time_text.page is None:
+                self.running = False
+                break
             if not self.running:
                 continue
             self.remaining -= 1
@@ -337,14 +374,7 @@ class StudyTimer:
 # ---------------------------------------------------------------------
 # Page
 # ---------------------------------------------------------------------
-def main(page: ft.Page):
-    page.title = "Arcadia - Study timer"
-    page.bgcolor = BG
-    page.padding = 0
-    page.theme_mode = ft.ThemeMode.LIGHT
-    page.window.width = 1440
-    page.window.height = 940
-
+def build_timer_root(page: ft.Page) -> ft.Row:
     timer = StudyTimer(page)
 
     header = ft.Container(
@@ -366,31 +396,44 @@ def main(page: ft.Page):
         ),
     )
 
-    page.add(ft.Row([
-        build_sidebar(page),
-        ft.Column([header, content], spacing=0, expand=True,
-                  horizontal_alignment=ft.CrossAxisAlignment.STRETCH),
-    ], spacing=0, expand=True, vertical_alignment=ft.CrossAxisAlignment.STRETCH))
-
     page.run_task(timer.tick_loop)
 
-def get_view(page: ft.Page) -> ft.View:
-    # Clear any existing controls temporarily so main() can build onto a clean slate
-    old_controls = list(page.controls)
-    page.controls.clear()
-    
-    # Run the file's existing main() setup
-    main(page)
-    
-    # Capture what main() added to page, then restore page.controls
-    view_controls = list(page.controls)
-    page.controls.clear()
-    page.controls.extend(old_controls)
-    
-    return ft.View(
-        route=page.route,
-        padding=0,
-        controls=view_controls,
+    return ft.Row(
+        [
+            build_sidebar(page),
+            ft.Column(
+                [header, content],
+                spacing=0,
+                expand=True,
+                horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
+            ),
+        ],
+        spacing=0,
+        expand=True,
+        vertical_alignment=ft.CrossAxisAlignment.STRETCH,
     )
+
+
+def main(page: ft.Page):
+    page.title = "Arcadia - Study timer"
+    page.bgcolor = BG
+    page.padding = 0
+    page.theme_mode = ft.ThemeMode.LIGHT
+    page.window.width = 1440
+    page.window.height = 940
+
+    page.controls.clear()
+    page.add(build_timer_root(page))
+
+
+def get_view(page: ft.Page) -> ft.View:
+    return ft.View(
+        route="/studytimer",
+        padding=0,
+        bgcolor=BG,
+        controls=[build_timer_root(page)],
+    )
+
+
 if __name__ == "__main__":
     ft.run(main)

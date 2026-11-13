@@ -1,6 +1,6 @@
 """Arcadia - Study planner (frontend only), built with Flet 1.x.
 
-Run:  python study_planner.py
+Run:  python studyplanner_backend_dalem.py
 """
 import calendar as pycal
 from datetime import date, timedelta
@@ -36,6 +36,14 @@ HOUR_H = 49            # pixel height of one hour in the week grid
 TIME_COL_W = 54        # width of the time-label column
 TODO_W = 406           # width of the To-do card
 
+ROUTE_MAP = {
+    "ai": "/ai-assistant",
+    "flashcards": "/flashcards",
+    "planner": "/studyplanner",
+    "timer": "/studytimer",
+    "profile": "/profile",
+}
+
 
 def fmt(h: float) -> str:
     return f"{int(h):02d}:{int(round((h % 1) * 60)):02d}"
@@ -49,25 +57,7 @@ def T(value, size=14, weight=None, color=TEXT, **kw):
     return ft.Text(value, size=size, weight=weight, color=color, **kw)
 
 
-# --------------------------------------------------------------------------- #
-# App
-# --------------------------------------------------------------------------- #
-def main(page: ft.Page):
-    page.title = "Arcadia - Study planner"
-    page.padding = 0
-    page.spacing = 0
-    page.bgcolor = BG
-    page.fonts = {
-        "Inter": "https://github.com/google/fonts/raw/main/ofl/inter/Inter%5Bopsz,wght%5D.ttf"
-    }
-    page.theme = ft.Theme(font_family="Inter", color_scheme_seed=TEAL)
-    page.theme_mode = ft.ThemeMode.LIGHT
-    page.window.width = 1600
-    page.window.height = 960
-    page.window.min_width = 1400   # desktop layout, like the design (1920 wide)
-    page.window.min_height = 760
-    page.window.maximized = True
-
+def build_planner_root(page: ft.Page) -> ft.Container:
     today = date.today()
     monday = today - timedelta(days=today.weekday())
 
@@ -88,6 +78,8 @@ def main(page: ft.Page):
         ],
     }
 
+    root_host = ft.Container(expand=True)
+
     # ------------------------------------------------------------------ helpers
     def toast(msg):
         page.show_dialog(ft.SnackBar(ft.Text(msg), bgcolor=TEXT_2, duration=1800))
@@ -97,8 +89,12 @@ def main(page: ft.Page):
         render()
 
     def go(nav):
-        S["nav"] = nav
-        render()
+        target = ROUTE_MAP.get(nav)
+        if target and target != page.route:
+            page.run_task(page.push_route, target)
+        else:
+            S["nav"] = nav
+            render()
 
     # ------------------------------------------------------------------ sidebar
     def logo(size=44, radius=10):
@@ -141,7 +137,8 @@ def main(page: ft.Page):
 
         return ft.Container(
             height=50, border_radius=8, padding=ft.Padding.only(left=14, right=6),
-            on_click=lambda e, t=title: toast(f'Open chat: "{t}"'),
+            on_click=lambda e, t=title: go("ai"),
+            ink=True,
             content=ft.Row([
                 ft.Icon(ft.Icons.CHAT_BUBBLE_OUTLINE, size=21, color="#4B5563"),
                 ft.Container(expand=True, content=T(title, 16, ft.FontWeight.W_400, "#4B5563",
@@ -197,7 +194,9 @@ def main(page: ft.Page):
                           spacing=0, expand=True, scroll=ft.ScrollMode.AUTO),
                 ft.Container(
                     border=ft.Border.all(1, BORDER), border_radius=12, height=76,
-                    padding=ft.Padding.symmetric(horizontal=15), on_click=lambda e: go("profile"),
+                    padding=ft.Padding.symmetric(horizontal=15),
+                    on_click=lambda e: go("profile"),
+                    ink=True,
                     content=ft.Row([
                         ft.Container(width=44, height=44, border_radius=22, bgcolor="#EEF0F2",
                                      alignment=ft.Alignment.CENTER,
@@ -348,266 +347,283 @@ def main(page: ft.Page):
                                  padding=ft.Padding.symmetric(horizontal=12, vertical=6),
                                  content=T(f"{done_n} of {len(tasks)} done", 13.5, ft.FontWeight.W_600, TEAL)),
                 ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-                ft.Container(height=22),
+                ft.Container(height=18),
                 segmented([("today", "Today"), ("upcoming", "Upcoming"), ("done", "Done")],
                           S["tab"], pick_tab),
-                ft.Container(height=24),
+                ft.Container(height=18),
                 ft.Column(items, spacing=12),
-                ft.Container(height=24),
+                ft.Container(height=18),
                 dashed_add_button(),
             ], spacing=0, tight=True),
         )
 
     # ------------------------------------------------------------------ calendar card
-    def event_block(task):
+    def step_anchor(delta):
+        v = S["view"]
+        if v == "day":
+            S["anchor"] += timedelta(days=delta)
+        elif v == "week":
+            S["anchor"] += timedelta(weeks=delta)
+        else:
+            a = S["anchor"]
+            m = a.month - 1 + delta
+            y, m = a.year + m // 12, m % 12 + 1
+            S["anchor"] = date(y, m, min(a.day, pycal.monthrange(y, m)[1]))
+        render()
+
+    def pick_view(v):
+        S["view"] = v
+        render()
+
+    def build_cal_header():
+        a, v = S["anchor"], S["view"]
+        wk_mon = a - timedelta(days=a.weekday())
+        wk_sun = wk_mon + timedelta(days=6)
+        if v == "day":
+            title = a.strftime("%B ") + str(a.day) + a.strftime(", %Y")
+            sub = a.strftime("%A") + (" · Today" if a == today else "")
+        elif v == "week":
+            title = wk_mon.strftime("%B %Y")
+            end = f"{wk_sun.day}" if wk_mon.month == wk_sun.month else wk_sun.strftime("%b ") + str(wk_sun.day)
+            sub = f"Week of {wk_mon.strftime('%b')} {wk_mon.day}–{end}"
+        else:
+            title = a.strftime("%B %Y")
+            sub = "Month overview"
+
+        def nav_btn(icon, delta):
+            return ft.Container(
+                width=42, height=40, border_radius=12, border=ft.Border.all(1, BORDER), bgcolor=WHITE,
+                alignment=ft.Alignment.CENTER, ink=True, on_click=lambda e, d=delta: step_anchor(d),
+                content=ft.Icon(icon, size=18, color="#374151"),
+            )
+
+        return ft.Row([
+            ft.Column([T(title, 22, ft.FontWeight.W_700, TEXT),
+                       T(sub, 14, color=MUTED)], spacing=1),
+            ft.Row([
+                segmented([("day", "Day"), ("week", "Week"), ("month", "Month")],
+                          v, pick_view, item_w=66, height=34, text_size=13.5),
+                ft.Container(width=4),
+                nav_btn(ft.Icons.CHEVRON_LEFT, -1),
+                nav_btn(ft.Icons.CHEVRON_RIGHT, 1),
+            ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+        ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN)
+
+    def event_block(task, top, height):
         p = PALETTE[task["color"]]
         done = task["done"]
-        h = max((task["end"] - task["start"]) * HOUR_H - 2, 34)
         deco = ft.TextStyle(decoration=ft.TextDecoration.LINE_THROUGH) if done else None
-        lines = [T(task["title"], 12.5, ft.FontWeight.W_600, p["text"], style=deco,
-                   max_lines=1, overflow=ft.TextOverflow.ELLIPSIS)]
-        if h >= 44:
-            lines.append(T(fmt(task["start"]) + " – " + fmt(task["end"]), 10, color=p["text"], opacity=0.75))
+        compact = height < 34
         return ft.Container(
-            top=(task["start"] - HOUR_START) * HOUR_H + 1, left=5, right=5, height=h,
-            bgcolor=p["bg"], border_radius=6, border=ft.Border.all(1, p["line"]),
-            clip_behavior=ft.ClipBehavior.ANTI_ALIAS,
-            opacity=0.55 if done else 1,
-            tooltip=("Mark as not done" if done else "Mark complete"),
+            left=4, right=4, top=top, height=height,
+            bgcolor=p["bg"], border_radius=8, opacity=0.6 if done else 1,
+            border=ft.Border(
+                left=ft.BorderSide(3, p["edge"]),
+                top=ft.BorderSide(0.8, p["line"]),
+                right=ft.BorderSide(0.8, p["line"]),
+                bottom=ft.BorderSide(0.8, p["line"]),
+            ),
+            padding=ft.Padding.only(left=8, right=6, top=3 if compact else 7, bottom=2),
             on_click=lambda e, t=task: toggle(t),
-            content=ft.Row([
-                ft.Container(width=2.5, bgcolor=p["edge"]),
-                ft.Container(expand=True, padding=ft.Padding.only(left=6, top=7, right=4),
-                             content=ft.Column(lines, spacing=3)),
-            ], spacing=0, vertical_alignment=ft.CrossAxisAlignment.STRETCH),
+            content=ft.Column([
+                T(task["title"], 12.5, ft.FontWeight.W_600, p["text"],
+                  max_lines=1, overflow=ft.TextOverflow.ELLIPSIS, style=deco),
+                *([T(fmt_short(task["start"]), 11, color=p["text"])] if not compact else []),
+            ], spacing=1),
         )
 
-    def nav_btn(icon, on_click):
-        return ft.Container(width=36, height=36, border_radius=8, border=ft.Border.all(1, BORDER),
-                            alignment=ft.Alignment.CENTER, on_click=on_click,
-                            content=ft.Icon(icon, size=16, color=TEXT_2))
+    def build_week_or_day(days):
+        hours = list(range(HOUR_START, HOUR_END + 1))
+        total_h = (HOUR_END - HOUR_START + 1) * HOUR_H
 
-    def shift(direction):
-        a, v = S["anchor"], S["view"]
-        if v == "week":
-            S["anchor"] = a + timedelta(days=7 * direction)
-        elif v == "day":
-            S["anchor"] = a + timedelta(days=direction)
-        else:
-            m = a.month - 1 + direction
-            S["anchor"] = date(a.year + m // 12, m % 12 + 1, 1)
-        render()
-
-    def go_today(e):
-        S["anchor"] = today
-        render()
-
-    def pick_view(k):
-        S["view"] = k
-        render()
-
-    def range_label():
-        a = S["anchor"]
-        if S["view"] == "week":
-            ws = a - timedelta(days=a.weekday())
-            we = ws + timedelta(days=6)
-            return f"{ws:%b} {ws.day} – {we:%b} {we.day}, {we.year}"
-        if S["view"] == "day":
-            return f"{a:%A, %b} {a.day}, {a.year}"
-        return f"{a:%B %Y}"
-
-    def time_grid(days):
-        grid_h = (HOUR_END - HOUR_START) * HOUR_H + 14
-        n_hours = HOUR_END - HOUR_START
-
-        # header row with day names / numbers
-        head = [ft.Container(width=TIME_COL_W)]
+        # day-name header strip
+        hdr = [ft.Container(width=TIME_COL_W)]
         for d in days:
             is_today = d == today
-            c = TEAL if is_today else "#374151"
-            w = ft.FontWeight.W_700 if is_today else ft.FontWeight.W_400
-            head.append(ft.Container(expand=1, content=ft.Column([
-                T(f"{d:%a}", 13, w, c), ft.Container(height=10), T(str(d.day), 13, w, c),
-            ], spacing=0, horizontal_alignment=ft.CrossAxisAlignment.CENTER)))
-
-        # time labels
-        labels = ft.Stack([
-            ft.Container(top=i * HOUR_H + 1, left=0, content=T(fmt_short(HOUR_START + i), 11.5, color="#4B5563"))
-            for i in range(n_hours + 1)
-        ], width=TIME_COL_W, height=grid_h)
-
-        cols = [labels]
-        for d in days:
-            lines = [ft.Container(top=i * HOUR_H, left=0, right=0, height=1, bgcolor=GRID)
-                     for i in range(n_hours)]
-            evs = [event_block(t) for t in sorted(S["tasks"], key=lambda t: t["start"]) if t["day"] == d]
-            cols.append(ft.Container(
-                expand=1, height=grid_h,
-                border=ft.Border.only(left=ft.BorderSide(1, GRID)),
-                content=ft.Stack(lines + evs, clip_behavior=ft.ClipBehavior.NONE),
+            hdr.append(ft.Container(
+                expand=True, height=58,
+                bgcolor=TEAL_FAINT if is_today else None,
+                border_radius=ft.BorderRadius.only(top_left=12, top_right=12),
+                alignment=ft.Alignment.CENTER,
+                content=ft.Column([
+                    T(["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"][d.weekday()],
+                      11.5, ft.FontWeight.W_600, TEAL if is_today else MUTED),
+                    T(str(d.day), 18, ft.FontWeight.W_700, TEAL if is_today else TEXT),
+                ], spacing=1, horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                   alignment=ft.MainAxisAlignment.CENTER),
             ))
+
+        # time labels column
+        time_col = ft.Column(
+            [ft.Container(height=HOUR_H, alignment=ft.Alignment.TOP_RIGHT,
+                          padding=ft.Padding.only(right=14),
+                          content=T(f"{h:02d}:00", 12, color=MUTED))
+             for h in hours],
+            spacing=0, width=TIME_COL_W,
+        )
+
+        # day columns
+        day_cols = []
+        for idx, d in enumerate(days):
+            is_today = d == today
+            lines = ft.Column(
+                [ft.Container(height=HOUR_H, border=ft.Border.only(top=ft.BorderSide(1, GRID)))
+                 for _ in hours],
+                spacing=0,
+            )
+            events = []
+            for t in S["tasks"]:
+                if t["day"] == d and HOUR_START <= t["start"] <= HOUR_END:
+                    top = (t["start"] - HOUR_START) * HOUR_H + 1
+                    h_px = max(23, (t["end"] - t["start"]) * HOUR_H - 2)
+                    events.append(event_block(t, top, h_px))
+            day_cols.append(ft.Container(
+                expand=True, height=total_h,
+                bgcolor=TEAL_FAINT if is_today else None,
+                border=ft.Border.only(left=ft.BorderSide(1, GRID)) if idx else None,
+                content=ft.Stack([lines, *events]),
+            ))
+
         return ft.Column([
-            ft.Row(head, spacing=0),
-            ft.Container(height=22),
-            ft.Row(cols, spacing=0, vertical_alignment=ft.CrossAxisAlignment.START),
+            ft.Row(hdr, spacing=0),
+            ft.Container(height=10),
+            ft.Row([time_col, *day_cols], spacing=0, vertical_alignment=ft.CrossAxisAlignment.START),
         ], spacing=0)
 
-    def month_grid():
+    def build_month():
         a = S["anchor"]
-        weeks = pycal.Calendar(firstweekday=0).monthdatescalendar(a.year, a.month)
-        head = ft.Row([ft.Container(expand=1, alignment=ft.Alignment.CENTER, content=T(n, 13, color="#374151"))
-                       for n in ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]], spacing=0)
-        rows = []
+        cal = pycal.Calendar(firstweekday=0)
+        weeks = cal.monthdatescalendar(a.year, a.month)
+        hdr = ft.Row([
+            ft.Container(expand=True, alignment=ft.Alignment.CENTER, padding=ft.Padding.only(bottom=8),
+                         content=T(n, 12, ft.FontWeight.W_600, MUTED))
+            for n in ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"]
+        ], spacing=6)
+        rows = [hdr]
         for wk in weeks:
             cells = []
             for d in wk:
-                is_today = d == today
-                chips = []
-                for t in sorted([t for t in S["tasks"] if t["day"] == d], key=lambda t: t["start"]):
-                    p = PALETTE[t["color"]]
-                    chips.append(ft.Container(
-                        bgcolor=p["bg"], border_radius=4, padding=ft.Padding.symmetric(horizontal=5, vertical=2),
-                        opacity=0.55 if t["done"] else 1, on_click=lambda e, t=t: toggle(t),
-                        content=T(t["title"], 10.5, ft.FontWeight.W_600, p["text"], max_lines=1,
-                                  overflow=ft.TextOverflow.ELLIPSIS)))
+                in_m = d.month == a.month
+                is_t = d == today
+                day_tasks = [t for t in S["tasks"] if t["day"] == d]
+                pills = [
+                    ft.Container(
+                        bgcolor=PALETTE[t["color"]]["bg"], border_radius=5,
+                        padding=ft.Padding.symmetric(horizontal=6, vertical=2),
+                        content=T(t["title"], 11, ft.FontWeight.W_600, PALETTE[t["color"]]["text"],
+                                  max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
+                    )
+                    for t in day_tasks[:2]
+                ]
                 cells.append(ft.Container(
-                    expand=1, height=100, padding=6,
-                    border=ft.Border.only(left=ft.BorderSide(1, GRID), top=ft.BorderSide(1, GRID)),
-                    opacity=1 if d.month == a.month else 0.4,
+                    expand=True, height=96, border_radius=10, padding=7,
+                    bgcolor=TEAL_FAINT if is_t else (WHITE if in_m else "#FAFAFB"),
+                    border=ft.Border.all(1.3 if is_t else 1, TEAL if is_t else BORDER),
+                    on_click=lambda e, day=d: (S.update(anchor=day, view="day"), render()),
                     content=ft.Column([
-                        T(str(d.day), 12.5, ft.FontWeight.W_700 if is_today else ft.FontWeight.W_400,
-                          TEAL if is_today else TEXT_2),
-                        *chips[:3],
-                    ], spacing=3)))
-            rows.append(ft.Row(cells, spacing=0))
-        return ft.Column([head, ft.Container(height=14), *rows], spacing=0)
+                        T(str(d.day), 13, ft.FontWeight.W_700 if is_t else ft.FontWeight.W_500,
+                          TEAL if is_t else (TEXT if in_m else "#B0B5BD")),
+                        *pills,
+                    ], spacing=3),
+                ))
+            rows.append(ft.Row(cells, spacing=6))
+        return ft.Column(rows, spacing=6)
 
     def build_calendar():
-        a = S["anchor"]
-        if S["view"] == "week":
-            ws = a - timedelta(days=a.weekday())
-            body = time_grid([ws + timedelta(days=i) for i in range(7)])
-        elif S["view"] == "day":
-            body = time_grid([a])
+        a, v = S["anchor"], S["view"]
+        if v == "day":
+            body = build_week_or_day([a])
+        elif v == "week":
+            wk_mon = a - timedelta(days=a.weekday())
+            body = build_week_or_day([wk_mon + timedelta(days=i) for i in range(7)])
         else:
-            body = month_grid()
+            body = build_month()
 
         return ft.Container(
             expand=True, bgcolor=WHITE, border_radius=20, border=ft.Border.all(1, BORDER),
-            padding=ft.Padding.only(left=24, right=24, top=32, bottom=34),
+            padding=ft.Padding.only(left=28, right=28, top=26, bottom=24),
             content=ft.Column([
-                ft.Row([
-                    ft.Row([
-                        nav_btn(ft.Icons.CHEVRON_LEFT, lambda e: shift(-1)),
-                        nav_btn(ft.Icons.CHEVRON_RIGHT, lambda e: shift(1)),
-                        ft.Container(height=36, border_radius=8, border=ft.Border.all(1, BORDER),
-                                     padding=ft.Padding.symmetric(horizontal=12),
-                                     alignment=ft.Alignment.CENTER, on_click=go_today,
-                                     content=T("Today", 13, ft.FontWeight.W_600, TEAL)),
-                        ft.Container(width=4),
-                        T(range_label(), 21, ft.FontWeight.W_700, TEXT),
-                    ], spacing=10),
-                    ft.Container(
-                        bgcolor=SEG_BG, border_radius=10, padding=4,
-                        content=ft.Row([
-                            ft.Container(
-                                height=36, border_radius=8,
-                                padding=ft.Padding.symmetric(horizontal=16),
-                                alignment=ft.Alignment.CENTER,
-                                bgcolor=WHITE if S["view"] == k else None,
-                                shadow=ft.BoxShadow(blur_radius=3, color="#1A000000", offset=ft.Offset(0, 1))
-                                if S["view"] == k else None,
-                                on_click=lambda e, k=k: pick_view(k),
-                                content=T(lbl, 13, ft.FontWeight.W_600 if S["view"] == k else ft.FontWeight.W_400,
-                                          TEAL if S["view"] == k else MUTED))
-                            for k, lbl in [("day", "Day"), ("week", "Week"), ("month", "Month")]
-                        ], spacing=0, tight=True)),
-                ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-                ft.Container(height=36),
+                build_cal_header(),
+                ft.Container(height=24),
                 body,
-                ft.Container(height=26),
-                ft.Row([
-                    ft.Row([ft.Container(width=7, height=7, border_radius=4, bgcolor=TEAL),
-                            T("Planner task", 11, color=TEAL)], spacing=5, tight=True),
-                    T("Click a calendar task to mark it complete", 11, color="#5A52B5"),
-                ], spacing=22),
             ], spacing=0, tight=True),
         )
 
-    # ------------------------------------------------------------------ actions
-    def add_task(title, day, start, end, color):
-        S["tasks"].append(dict(id=S["next_id"], title=title, day=day, start=start,
-                               end=end, color=color, done=False))
-        S["next_id"] += 1
-        render()
-
+    # ------------------------------------------------------------------ dialogs & actions
     def open_add_dialog():
-        week_start = S["anchor"] - timedelta(days=S["anchor"].weekday())
-        day_opts = [week_start + timedelta(days=i) for i in range(7)]
-        times = [HOUR_START + i * 0.5 for i in range((HOUR_END - HOUR_START) * 2 + 1)]
-
-        title = ft.TextField(label="Task title", autofocus=True, border_radius=10)
-        day_dd = ft.Dropdown(label="Day", width=200, border_radius=10,
-                             value=(today if today in day_opts else day_opts[0]).isoformat(),
-                             options=[ft.DropdownOption(key=d.isoformat(), text=f"{d:%a, %b} {d.day}")
-                                      for d in day_opts])
-        start_dd = ft.Dropdown(label="Start", width=120, border_radius=10, value="14.0",
-                               options=[ft.DropdownOption(key=str(float(t)), text=fmt(t)) for t in times[:-1]])
-        end_dd = ft.Dropdown(label="End", width=120, border_radius=10, value="15.0",
-                             options=[ft.DropdownOption(key=str(float(t)), text=fmt(t)) for t in times[1:]])
-        color_dd = ft.Dropdown(label="Colour", width=200, border_radius=10, value="teal",
-                               options=[ft.DropdownOption(key=k, text=k.capitalize()) for k in PALETTE])
-        err = T("", 12, color="#DC2626")
+        title_f = ft.TextField(label="Task title", hint_text="e.g. Practice calculus problems", autofocus=True)
+        day_opts = [(today + timedelta(days=i)).isoformat() for i in range(-1, 7)]
+        day_dd = ft.Dropdown(
+            label="Day", value=today.isoformat(),
+            options=[ft.dropdown.Option(d, "Today" if d == today.isoformat()
+                                        else date.fromisoformat(d).strftime("%a, %b %d")) for d in day_opts],
+        )
+        hours_opts = [ft.dropdown.Option(str(h), fmt(h)) for h in [8, 8.5, 9, 9.5, 10, 10.5, 11, 11.5,
+                                                                   12, 13, 14, 14.5, 15, 16, 17]]
+        start_dd = ft.Dropdown(label="Start", value="14", options=hours_opts, expand=True)
+        dur_dd = ft.Dropdown(label="Duration", value="1", expand=True, options=[
+            ft.dropdown.Option("0.5", "30 min"),
+            ft.dropdown.Option("1", "1 hour"),
+            ft.dropdown.Option("1.5", "1 hr 30 min"),
+            ft.dropdown.Option("2", "2 hours"),
+        ])
+        color_dd = ft.Dropdown(label="Category", value="teal", options=[
+            ft.dropdown.Option("teal", "Study / Review"),
+            ft.dropdown.Option("purple", "Deep work"),
+            ft.dropdown.Option("orange", "Assignment"),
+            ft.dropdown.Option("gray", "Personal"),
+        ])
 
         def save(e):
-            s, en = float(start_dd.value), float(end_dd.value)
-            if not (title.value or "").strip():
-                err.value = "Please enter a title."
-            elif en <= s:
-                err.value = "End time must be after start time."
-            else:
-                page.pop_dialog()
-                add_task(title.value.strip(), date.fromisoformat(day_dd.value), s, en, color_dd.value)
+            name = (title_f.value or "").strip()
+            if not name:
+                title_f.error_text = "Please enter a title"
+                title_f.update()
                 return
-            err.update()
+            st = float(start_dd.value)
+            S["next_id"] += 1
+            S["tasks"].append(dict(
+                id=S["next_id"], title=name, day=date.fromisoformat(day_dd.value),
+                start=st, end=min(18.5, st + float(dur_dd.value)), color=color_dd.value, done=False,
+            ))
+            page.pop_dialog()
+            render()
+            toast(f'Added "{name}"')
 
-        page.show_dialog(ft.AlertDialog(
-            modal=True, bgcolor=WHITE, shape=ft.RoundedRectangleBorder(radius=16),
-            title=T("Add task", 20, ft.FontWeight.W_700),
-            content=ft.Container(width=420, content=ft.Column([
-                title,
-                ft.Row([day_dd, color_dd], spacing=12),
-                ft.Row([start_dd, end_dd], spacing=12),
-                err,
-            ], spacing=14, tight=True)),
+        dlg = ft.AlertDialog(
+            title=T("New task", 20, ft.FontWeight.W_700),
+            content=ft.Container(width=380, content=ft.Column(
+                [title_f, day_dd, ft.Row([start_dd, dur_dd], spacing=10), color_dd],
+                spacing=12, tight=True)),
             actions=[
                 ft.TextButton("Cancel", on_click=lambda e: page.pop_dialog()),
-                ft.FilledButton("Add task", on_click=save, bgcolor=TEAL),
+                ft.FilledButton("Add task", bgcolor=TEAL, color=WHITE, on_click=save),
             ],
-        ))
+        )
+        page.show_dialog(dlg)
 
-    AI_IDEAS = [("Practice quiz", "purple"), ("Summarise lecture notes", "teal"),
-                ("Spaced-repetition review", "teal"), ("Past paper question", "orange")]
+    SUGGESTIONS = [
+        ("Spaced-repetition quiz", 11, 11.5, "teal"),
+        ("Summarize lecture slides", 15, 16, "purple"),
+        ("Practice past exam Qs", 13, 14, "orange"),
+        ("Outline essay draft", 16, 17, "purple"),
+    ]
 
     def ai_suggest(e):
-        title, color = AI_IDEAS[S["ai_idx"] % len(AI_IDEAS)]
+        title, st, en, col = SUGGESTIONS[S["ai_idx"] % len(SUGGESTIONS)]
         S["ai_idx"] += 1
-        for offset in range(7):
-            d = today + timedelta(days=offset)
-            busy = [(t["start"], t["end"]) for t in S["tasks"] if t["day"] == d]
-            h = HOUR_START if offset else max(HOUR_START, 9)
-            while h + 1 <= HOUR_END:
-                if all(h + 1 <= s or h >= en for s, en in busy):
-                    add_task(title, d, h, h + 1, color)
-                    toast(f"AI suggested: {title} · {d:%a} {fmt(h)} – {fmt(h + 1)}")
-                    return
-                h += 0.5
-        toast("No free slot found this week.")
+        S["next_id"] += 1
+        S["tasks"].append(dict(id=S["next_id"], title=title, day=today,
+                               start=st, end=en, color=col, done=False))
+        S["tab"] = "today"
+        S["anchor"] = today
+        render()
+        toast(f'AI scheduled "{title}" ({fmt(st)}–{fmt(en)})')
 
-    # ------------------------------------------------------------------ layout
+    # ------------------------------------------------------------------ layout & render
     def build_placeholder():
-        names = {"ai": "AI Assistant", "flashcards": "Flashcards", "timer": "Study timer", "profile": "Profile"}
-        name = names[S["nav"]]
+        name = {"ai": "AI Assistant", "flashcards": "Flashcards",
+                "timer": "Study timer", "profile": "Profile"}[S["nav"]]
         return ft.Column([
             build_header(name, "Coming soon", actions=False),
             ft.Container(expand=True, alignment=ft.Alignment.CENTER,
@@ -631,47 +647,43 @@ def main(page: ft.Page):
         return ft.Row([build_sidebar(), main_area], spacing=0, expand=True,
                       vertical_alignment=ft.CrossAxisAlignment.STRETCH)
 
-    def render():
-        page.controls.clear()
-        page.add(build_root())
+    def render(update: bool = True):
+        root_host.content = build_root()
+        if update:
+            page.update()
 
-    render()
+    render(update=False)
+    return root_host
+
+
+def main(page: ft.Page):
+    page.title = "Arcadia - Study planner"
+    page.padding = 0
+    page.spacing = 0
+    page.bgcolor = BG
+    page.fonts = {
+        "Inter": "https://github.com/google/fonts/raw/main/ofl/inter/Inter%5Bopsz,wght%5D.ttf"
+    }
+    page.theme = ft.Theme(font_family="Inter", color_scheme_seed=TEAL)
+    page.theme_mode = ft.ThemeMode.LIGHT
+    page.window.width = 1600
+    page.window.height = 960
+    page.window.min_width = 1400
+    page.window.min_height = 760
+    page.window.maximized = True
+
+    page.controls.clear()
+    page.add(build_planner_root(page))
+
 
 def get_view(page: ft.Page) -> ft.View:
-    # Clear any existing controls temporarily so main() can build onto a clean slate
-    old_controls = list(page.controls)
-    page.controls.clear()
-    
-    # Run the file's existing main() setup
-    main(page)
-    
-    # Capture what main() added to page, then restore page.controls
-    view_controls = list(page.controls)
-    page.controls.clear()
-    page.controls.extend(old_controls)
-    
     return ft.View(
-        route=page.route,
+        route="/studyplanner",
         padding=0,
-        controls=view_controls,
+        bgcolor=BG,
+        controls=[build_planner_root(page)],
     )
-def get_view(page: ft.Page) -> ft.View:
-    # Clear any existing controls temporarily so main() can build onto a clean slate
-    old_controls = list(page.controls)
-    page.controls.clear()
-    
-    # Run the file's existing main() setup
-    main(page)
-    
-    # Capture what main() added to page, then restore page.controls
-    view_controls = list(page.controls)
-    page.controls.clear()
-    page.controls.extend(old_controls)
-    
-    return ft.View(
-        route=page.route,
-        padding=0,
-        controls=view_controls,
-    )
+
+
 if __name__ == "__main__":
     ft.run(main)

@@ -1,8 +1,69 @@
 import flet as ft
 from theme import PRIMARY_TEAL, LIGHT_TEAL, TEXT_DARK, TEXT_GREY, BORDER_COLOR
+from pages.sidebar import build_sidebar
+
+CARDS = [
+    ("What is the dimension of Force?", "M · L · T⁻²  (kg·m/s²)"),
+    ("What is Newton's Second Law?", "F = m · a (Net force equals mass times acceleration)"),
+    ("What is the SI unit of Work & Energy?", "Joule (J = N·m = kg·m²/s²)"),
+    ("What is conservation of momentum?", "In a closed system with no external net force, total momentum remains constant."),
+]
 
 
-def build_ai_study_view(switch_tab) -> ft.Container:
+def build_ai_study_view(page: ft.Page, switch_tab) -> ft.Container:
+    state = {"idx": 0, "revealed": False}
+
+    badge_text = ft.Text("QUESTION", size=12, weight=ft.FontWeight.BOLD, color=PRIMARY_TEAL)
+    card_main_text = ft.Text(
+        CARDS[0][0],
+        size=32,
+        weight=ft.FontWeight.BOLD,
+        color=TEXT_DARK,
+        text_align=ft.TextAlign.CENTER,
+    )
+    card_sub_text = ft.Text(
+        "Take a moment to recall the answer.",
+        size=16,
+        color=TEXT_GREY,
+        text_align=ft.TextAlign.CENTER,
+    )
+    reveal_label = ft.Text("Reveal answer", color=ft.Colors.WHITE, weight=ft.FontWeight.W_600)
+    progress_label = ft.Text(f"Card 1 of {len(CARDS)}", color=TEXT_GREY, size=14)
+    progress_bar = ft.ProgressBar(value=1 / len(CARDS), color=PRIMARY_TEAL, bgcolor=BORDER_COLOR, height=6)
+    counter_label = ft.Text(f"1 / {len(CARDS)}", color=TEXT_GREY, size=14)
+
+    def sync_card():
+        idx = state["idx"]
+        q, a = CARDS[idx]
+        if state["revealed"]:
+            badge_text.value = "ANSWER"
+            card_main_text.value = a
+            card_sub_text.value = f"Question: {q}"
+            reveal_label.value = "Show question"
+        else:
+            badge_text.value = "QUESTION"
+            card_main_text.value = q
+            card_sub_text.value = "Take a moment to recall the answer."
+            reveal_label.value = "Reveal answer"
+        progress_label.value = f"Card {idx + 1} of {len(CARDS)}"
+        progress_bar.value = (idx + 1) / len(CARDS)
+        counter_label.value = f"{idx + 1} / {len(CARDS)}"
+        page.update()
+
+    def toggle_reveal(_):
+        state["revealed"] = not state["revealed"]
+        sync_card()
+
+    def prev_card(_):
+        state["idx"] = (state["idx"] - 1) % len(CARDS)
+        state["revealed"] = False
+        sync_card()
+
+    def next_card(_):
+        state["idx"] = (state["idx"] + 1) % len(CARDS)
+        state["revealed"] = False
+        sync_card()
+
     header_row = ft.Row(
         [
             ft.Column(
@@ -73,11 +134,11 @@ def build_ai_study_view(switch_tab) -> ft.Container:
             ft.Row(
                 [
                     ft.Text("General Physics · Flashcard study", color=TEXT_GREY, size=14),
-                    ft.Text("Card 1 of 4", color=TEXT_GREY, size=14),
+                    progress_label,
                 ],
                 alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
             ),
-            ft.ProgressBar(value=0.25, color=PRIMARY_TEAL, bgcolor=BORDER_COLOR, height=6),
+            progress_bar,
         ],
         spacing=8,
         margin=ft.Margin(0, 0, 0, 24),
@@ -85,12 +146,7 @@ def build_ai_study_view(switch_tab) -> ft.Container:
 
     flashcard = ft.Container(
         bgcolor=ft.Colors.WHITE,
-        border=ft.Border(
-            top=ft.BorderSide(1, BORDER_COLOR),
-            bottom=ft.BorderSide(1, BORDER_COLOR),
-            left=ft.BorderSide(1, BORDER_COLOR),
-            right=ft.BorderSide(1, BORDER_COLOR),
-        ),
+        border=ft.Border.all(1, BORDER_COLOR),
         border_radius=16,
         padding=40,
         content=ft.Column(
@@ -98,7 +154,7 @@ def build_ai_study_view(switch_tab) -> ft.Container:
                 ft.Row(
                     [
                         ft.Container(
-                            content=ft.Text("QUESTION", size=12, weight=ft.FontWeight.BOLD, color=PRIMARY_TEAL),
+                            content=badge_text,
                             bgcolor=LIGHT_TEAL,
                             padding=ft.Padding(12, 6, 12, 6),
                             border_radius=16,
@@ -108,19 +164,8 @@ def build_ai_study_view(switch_tab) -> ft.Container:
                     alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                 ),
                 ft.Container(height=60),
-                ft.Text(
-                    "What is the dimension of Force?",
-                    size=32,
-                    weight=ft.FontWeight.BOLD,
-                    color=TEXT_DARK,
-                    text_align=ft.TextAlign.CENTER,
-                ),
-                ft.Text(
-                    "Take a moment to recall the answer.",
-                    size=16,
-                    color=TEXT_GREY,
-                    text_align=ft.TextAlign.CENTER,
-                ),
+                card_main_text,
+                card_sub_text,
                 ft.Container(height=60),
                 ft.Row(
                     [
@@ -128,12 +173,13 @@ def build_ai_study_view(switch_tab) -> ft.Container:
                             content=ft.Row(
                                 [
                                     ft.Icon(ft.Icons.VISIBILITY, color=ft.Colors.WHITE, size=18),
-                                    ft.Text("Reveal answer", color=ft.Colors.WHITE, weight=ft.FontWeight.W_600),
+                                    reveal_label,
                                 ],
                                 spacing=8,
                             ),
                             bgcolor=PRIMARY_TEAL,
                             style=ft.ButtonStyle(padding=16, shape=ft.RoundedRectangleBorder(radius=8)),
+                            on_click=toggle_reveal,
                         )
                     ],
                     alignment=ft.MainAxisAlignment.CENTER,
@@ -152,8 +198,9 @@ def build_ai_study_view(switch_tab) -> ft.Container:
                 ]),
                 bgcolor=LIGHT_TEAL,
                 style=ft.ButtonStyle(padding=16, shape=ft.RoundedRectangleBorder(radius=8)),
+                on_click=prev_card,
             ),
-            ft.Text("1 / 4", color=TEXT_GREY, size=14),
+            counter_label,
             ft.Button(
                 content=ft.Row(
                     [
@@ -164,6 +211,7 @@ def build_ai_study_view(switch_tab) -> ft.Container:
                 ),
                 bgcolor=PRIMARY_TEAL,
                 style=ft.ButtonStyle(padding=16, shape=ft.RoundedRectangleBorder(radius=8)),
+                on_click=next_card,
             ),
         ],
         alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
@@ -193,7 +241,6 @@ def build_ai_study_view(switch_tab) -> ft.Container:
         ),
     )
 
-from pages.sidebar import build_sidebar
 
 def get_view(page: ft.Page) -> ft.View:
     route_map = {
@@ -202,8 +249,13 @@ def get_view(page: ft.Page) -> ft.View:
         "planner": "/studyplanner",
         "timer": "/studytimer",
         "profile": "/profile",
+        "studyview": "/studyview",
     }
-    switch_tab = lambda tab: page.push_route(route_map.get(tab, "/"))
+
+    def switch_tab(tab: str):
+        target = route_map.get(tab, "/")
+        if target != page.route:
+            page.run_task(page.push_route, target)
 
     return ft.View(
         route="/studyview",
@@ -212,7 +264,7 @@ def get_view(page: ft.Page) -> ft.View:
             ft.Row(
                 [
                     ft.Container(width=260, padding=20, content=build_sidebar("flashcards", switch_tab)),
-                    build_ai_study_view(switch_tab),
+                    build_ai_study_view(page, switch_tab),
                 ],
                 expand=True,
                 spacing=0,

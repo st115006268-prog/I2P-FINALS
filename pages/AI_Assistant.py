@@ -1,6 +1,5 @@
 """Arcadia frontend built with Flet (Python).
 
-Run:  python arcadia_flet.py
 Chat logic lives in backend.py.
 """
 from __future__ import annotations
@@ -115,7 +114,7 @@ class ArcadiaApp:
             multiline=True,
             min_lines=1,
             max_lines=8,
-            shift_enter=True,  # Enter sends, Shift+Enter adds a new line
+            shift_enter=True,
             cursor_color=TEAL,
             on_change=self._on_input_change,
             on_submit=self._on_submit,
@@ -141,6 +140,10 @@ class ArcadiaApp:
 
         self._render_chats()
         self._on_resize(update=auto_mount)
+
+    def _navigate(self, route: str | None) -> None:
+        if route and route != self.page.route:
+            self.page.run_task(self.page.push_route, route)
 
     # ------------------------------------------------------------ sidebar
     def _sidebar(self) -> ft.Control:
@@ -189,7 +192,7 @@ class ArcadiaApp:
             border=ft.Border.all(1, LINE),
             padding=ft.Padding.symmetric(horizontal=15),
             on_hover=hover_bg(WHITE, "#fafafa"),
-            on_click=lambda e: None,
+            on_click=lambda e: self._navigate("/profile"),
             content=ft.Row(
                 [
                     ft.Container(
@@ -234,6 +237,14 @@ class ArcadiaApp:
         )
 
     def _nav_item(self, item: dict) -> ft.Control:
+        route_map = {
+            "assistant": "/ai-assistant",
+            "flashcards": "/flashcards",
+            "planner": "/studyplanner",
+            "timer": "/studytimer",
+            "profile": "/profile",
+        }
+        target = route_map.get(item["key"])
         active = item["key"] == "assistant"
         icon_color = TEAL if active or item["key"] == "flashcards" else MUTED
         row = [
@@ -252,7 +263,7 @@ class ArcadiaApp:
             height=53, border_radius=12, bgcolor=normal,
             padding=ft.Padding.symmetric(horizontal=15),
             on_hover=None if active else hover_bg(normal, "#f6f7f8"),
-            on_click=lambda e: None,
+            on_click=lambda e, r=target: self._navigate(r),
             content=ft.Row(row, spacing=11),
         ))
 
@@ -400,7 +411,6 @@ class ArcadiaApp:
 
     # ------------------------------------------------------------ rendering
     def _on_resize(self, e=None, update: bool = True) -> None:
-        """Keep the content column centred with a max width, like CSS max-width."""
         width = (self.page.width or 1918) - SIDEBAR_W - 32
         w = max(320, min(CONTENT_MAX_W, width))
         self.bottom.width = w
@@ -486,25 +496,7 @@ def get_view(page: ft.Page) -> ft.View:
 
 
 async def main(page: ft.Page) -> None:
-    app = ArcadiaApp(page)
-
-    if "--screenshot" in sys.argv:
-        import asyncio
-        args = sys.argv[sys.argv.index("--screenshot") + 1:]
-        page.window.maximized = False
-        page.window.left, page.window.top = 0, 0
-        page.window.width, page.window.height = 1280, 760
-        page.window.always_on_top = True
-        page.update()
-        if len(args) > 1:
-            app._use_suggestion(args[1])
-            app._on_submit()
-        await asyncio.sleep(5)
-        grab = ("from PySide6.QtWidgets import QApplication; import sys; a=QApplication([]); "
-                "a.primaryScreen().grabWindow(0).save(sys.argv[1])")
-        proc = await asyncio.create_subprocess_exec(sys.executable, "-c", grab, args[0])
-        await proc.wait()
-        await page.window.destroy()
+    ArcadiaApp(page)
 
 
 if __name__ == "__main__":
