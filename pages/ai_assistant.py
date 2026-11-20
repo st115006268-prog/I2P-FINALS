@@ -101,6 +101,12 @@ class ArcadiaApp:
             page.theme = ft.Theme(font_family=FONT)
         page.on_resize = self._on_resize
 
+        self.attached_file: Optional[dict] = None
+        self.attachment_box = ft.Container(visible=False, padding=ft.Padding.only(bottom=10))
+        self.file_picker = ft.FilePicker(on_result=self._on_file_picked)
+        if self.file_picker not in self.page.overlay:
+            self.page.overlay.append(self.file_picker)
+
         self.chat_list = ft.Column(spacing=2, expand=True, scroll=ft.ScrollMode.AUTO)
         self.title = text(self.current.title, 24, INK, ft.FontWeight.W_700)
         self.empty = self._empty_state()
@@ -281,13 +287,112 @@ class ArcadiaApp:
             content=ft.Row([chip(s) for s in backend.SUGGESTIONS], spacing=12, wrap=True),
         )
 
+    def _pick_file(self, e=None, file_type: ft.FilePickerFileType = ft.FilePickerFileType.ANY):
+        try:
+            self.file_picker.pick_files(
+                dialog_title="Select a study file or image for Arcadia",
+                allow_multiple=False,
+                file_type=file_type,
+            )
+        except Exception as ex:
+            print("FilePicker error:", ex)
+
+    def _on_file_picked(self, e: ft.FilePickerResultEvent):
+        if not e.files or len(e.files) == 0:
+            return
+        f = e.files[0]
+        self.attached_file = {
+            "name": f.name,
+            "path": f.path,
+            "size": f.size,
+        }
+        self._update_attachment_view()
+        self._on_input_change()
+
+    def _format_size(self, size_bytes: int) -> str:
+        if size_bytes < 1024:
+            return f"{size_bytes} B"
+        elif size_bytes < 1024 * 1024:
+            return f"{size_bytes / 1024:.1f} KB"
+        else:
+            return f"{size_bytes / (1024 * 1024):.1f} MB"
+
+    def _remove_attachment(self, e=None):
+        self.attached_file = None
+        self._update_attachment_view()
+        self._on_input_change()
+
+    def _update_attachment_view(self):
+        if self.attached_file:
+            fname = self.attached_file["name"]
+            fsize = self._format_size(self.attached_file.get("size", 0))
+            import os
+            ext = os.path.splitext(fname)[1].lower()
+            if ext in (".mp4", ".mov", ".avi", ".webm", ".mkv", ".m4v", ".wmv", ".3gp", ".mpeg", ".mpg"):
+                icon_glyph = "📹"
+                badge_bg = "#FEF2F2"
+                border_col = "#FCA5A5"
+                icon_color = "#dc2626"
+            elif ext in (".mp3", ".wav", ".m4a", ".ogg", ".aac", ".flac"):
+                icon_glyph = "♩"
+                badge_bg = "#F0FDFA"
+                border_col = "#99F6E4"
+                icon_color = TEAL
+            elif ext in (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"):
+                icon_glyph = "🖼"
+                badge_bg = "#F0FDF4"
+                border_col = "#BBF7D0"
+                icon_color = "#16a34a"
+            else:
+                icon_glyph = "📎"
+                badge_bg = "#EDF7F6"
+                border_col = "#A8DDD7"
+                icon_color = TEAL
+
+            self.attachment_box.content = ft.Row(
+                [
+                    ft.Container(
+                        content=ft.Row(
+                            [
+                                text(icon_glyph, 15, icon_color),
+                                text(fname, 13.5, INK, weight=ft.FontWeight.W_600),
+                                text(f"({fsize})", 12, MUTED),
+                                clickable(ft.Container(
+                                    content=text("✕", 12, MUTED, weight=ft.FontWeight.W_700),
+                                    padding=ft.Padding.symmetric(horizontal=6, vertical=2),
+                                    border_radius=6,
+                                    on_hover=hover_bg(None, "#d1d5db"),
+                                    on_click=self._remove_attachment,
+                                    tooltip="Remove file",
+                                )),
+                            ],
+                            spacing=8,
+                            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                            tight=True,
+                        ),
+                        bgcolor=badge_bg,
+                        border=ft.Border.all(1, border_col),
+                        border_radius=8,
+                        padding=ft.Padding.symmetric(horizontal=12, vertical=6),
+                    )
+                ],
+                tight=True,
+            )
+            self.attachment_box.visible = True
+        else:
+            self.attachment_box.content = None
+            self.attachment_box.visible = False
+
+        if self.attachment_box.page is not None:
+            self.attachment_box.update()
+
     def _bottom_area(self) -> ft.Control:
-        def tool(glyph: str, tip: str, color: str = "#374151") -> ft.Control:
+        def tool(glyph: str, tip: str, color: str = "#374151", on_click=None) -> ft.Control:
             return clickable(ft.Container(
                 width=48, height=48, border_radius=10, bgcolor=CHIP,
                 alignment=ft.Alignment.CENTER, tooltip=tip,
                 on_hover=hover_bg(CHIP, "#e9ebee"),
-                on_click=lambda e: None,
+                on_click=on_click,
                 content=text(glyph, 14, color),
             ))
 
@@ -297,13 +402,15 @@ class ArcadiaApp:
             shadow=ft.BoxShadow(blur_radius=2, offset=ft.Offset(0, 1), color="#08111827"),
             content=ft.Column(
                 [
+                    self.attachment_box,
                     self.input,
                     ft.Container(height=18),
                     ft.Row(
                         [
-                            tool("⌕", "Search"),
-                            tool("▧", "Attach image"),
-                            tool("♩", "Audio", TEAL),
+                            tool("⌕", "Search & browse notes", on_click=lambda e: self._pick_file(e)),
+                            tool("▧", "Attach file (image, PDF, code, doc)", on_click=lambda e: self._pick_file(e)),
+                            tool("▶", "Attach video (MP4, MOV, WEBM, MKV)", "#dc2626", on_click=lambda e: self._pick_file(e, ft.FilePickerFileType.VIDEO)),
+                            tool("♩", "Audio recording", TEAL, on_click=lambda e: self._pick_file(e, ft.FilePickerFileType.AUDIO)),
                             ft.Container(expand=True),
                             clickable(self.send_btn),
                         ],
@@ -353,9 +460,49 @@ class ArcadiaApp:
 
     def _bubble(self, role: str, value: str) -> ft.Control:
         user = role == "user"
+        if not user and (value == "Thinking..." or "Analyzing video" in value):
+            body = ft.Row(
+                [
+                    ft.ProgressRing(width=16, height=16, stroke_width=2, color=TEAL),
+                    text("Arcadia is analyzing your video and generating study notes..." if "video" in value.lower() else "Arcadia is thinking...", 14, MUTED, italic=True),
+                ],
+                spacing=10,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            )
+        elif not user:
+            from .backend.math_formatter import format_scientific_text
+            clean_text = format_scientific_text(value)
+            body = ft.Markdown(
+                clean_text,
+                extension_set=ft.MarkdownExtensionSet.GITHUB_WEB,
+                code_theme="atom-one-dark",
+                selectable=True,
+            )
+        else:
+            if any(k in value for k in ("📎 **Attached File:**", "📹 **Attached Video:**", "[Attached File:", "[Uploaded File:")):
+                try:
+                    sheet = ft.MarkdownStyleSheet(
+                        p_text_style=ft.TextStyle(color=WHITE, font_family=FONT, size=15),
+                        strong_text_style=ft.TextStyle(color=WHITE, font_family=FONT, size=15, weight=ft.FontWeight.BOLD),
+                        code_text_style=ft.TextStyle(color="#d1fae5", font_family="Consolas", size=13),
+                    )
+                    body = ft.Markdown(
+                        value,
+                        extension_set=ft.MarkdownExtensionSet.GITHUB_WEB,
+                        selectable=True,
+                        md_style_sheet=sheet,
+                    )
+                except Exception:
+                    body = ft.Markdown(
+                        value,
+                        extension_set=ft.MarkdownExtensionSet.GITHUB_WEB,
+                        selectable=True,
+                    )
+            else:
+                body = ft.Text(value, size=15, color=WHITE, font_family=FONT, selectable=True)
+
         bubble = ft.Container(
-            content=ft.Text(value, size=15, color=WHITE if user else TEXT,
-                            font_family=FONT, selectable=True),
+            content=body,
             bgcolor=TEAL if user else WHITE,
             border=None if user else ft.Border.all(1, LINE),
             border_radius=14,
@@ -370,7 +517,8 @@ class ArcadiaApp:
     def _refresh(self) -> None:
         self._render_chats()
         self._render_messages()
-        self.page.update()
+        if self.page is not None:
+            self.page.update()
 
     # ------------------------------------------------------------ actions
     def _new_chat(self, e=None) -> None:
@@ -399,24 +547,81 @@ class ArcadiaApp:
             pass
 
     def _on_input_change(self, e=None) -> None:
-        new_bg = TEAL if (self.input.value or "").strip() else TEAL_DISABLED
+        has_text = bool((self.input.value or "").strip())
+        has_file = self.attached_file is not None
+        new_bg = TEAL if (has_text or has_file) else TEAL_DISABLED
         if self.send_btn.bgcolor != new_bg:
             self.send_btn.bgcolor = new_bg
             if self.send_btn.page is not None:
                 self.send_btn.update()
 
     def _on_submit(self, e=None) -> None:
+        import threading
+
         value = (self.input.value or "").strip()
-        if not value:
+        attachment = self.attached_file
+        if not value and not attachment:
             return
+
         self.input.value = ""
-        self.store.send(self.current.id, value)
+        self.attached_file = None
+        self._update_attachment_view()
         self.send_btn.bgcolor = TEAL_DISABLED
+
+        display_text = value
+        if attachment:
+            import os
+            fname = attachment.get("name", "file")
+            ext = os.path.splitext(fname)[1].lower()
+            is_video = ext in (".mp4", ".mov", ".avi", ".webm", ".mkv", ".m4v", ".wmv", ".3gp", ".mpeg", ".mpg")
+            tag_label = "Attached Video" if is_video else "Attached File"
+            icon_tag = "📹" if is_video else "📎"
+            if display_text:
+                display_text = f"{icon_tag} **{tag_label}:** `{fname}`\n\n{display_text}"
+            else:
+                if is_video:
+                    display_text = f"{icon_tag} **{tag_label}:** `{fname}`\n\nPlease analyze this video lecture, summarize the key concepts shown, and outline the topics covered."
+                    value = "Please analyze this video lecture and summarize its key concepts."
+                else:
+                    display_text = f"{icon_tag} **{tag_label}:** `{fname}`\n\nPlease analyze and explain this file."
+                    value = "Please analyze and summarize this attached file."
+
+        # Optimistically show user message and thinking indicator right away
+        is_video_att = False
+        if attachment:
+            import os
+            ext = os.path.splitext(attachment.get("name", ""))[1].lower()
+            is_video_att = ext in (".mp4", ".mov", ".avi", ".webm", ".mkv", ".m4v", ".wmv", ".3gp", ".mpeg", ".mpg")
+        user_msg = {"role": "user", "text": display_text}
+        thinking_text = "Analyzing video with Gemini..." if is_video_att else "Thinking..."
+        thinking_msg = {"role": "assistant", "text": thinking_text}
+        self.current.messages.append(user_msg)
+        self.current.messages.append(thinking_msg)
+        if len(self.current.messages) <= 2 and self.current.title == backend.DEFAULT_TITLE:
+            short_t = (attachment["name"] if attachment else value)[:30]
+            self.current.title = short_t + ("..." if len(short_t) >= 30 else "")
         self._refresh()
-        try:
-            self.input.focus()
-        except Exception:
-            pass
+
+        def worker():
+            try:
+                # Remove temporary optimism items so store.send can cleanly insert them
+                if thinking_msg in self.current.messages:
+                    self.current.messages.remove(thinking_msg)
+                if user_msg in self.current.messages:
+                    self.current.messages.remove(user_msg)
+
+                self.store.send(self.current.id, display_text, attachment=attachment)
+            except Exception as ex:
+                self.current.messages.append({"role": "user", "text": display_text})
+                self.current.messages.append({"role": "assistant", "text": f"Error: {ex}"})
+            finally:
+                self._refresh()
+                try:
+                    self.input.focus()
+                except Exception:
+                    pass
+
+        threading.Thread(target=worker, daemon=True).start()
 
 
 def get_view(page: ft.Page) -> ft.View:

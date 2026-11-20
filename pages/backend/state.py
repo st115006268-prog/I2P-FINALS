@@ -126,22 +126,68 @@ class ChatStore:
             CURRENT_CHAT_ID = self.chats[0].id
         return self.chats[0]
 
-    def send(self, chat_id: int, text: str) -> str:
+    def send(self, chat_id: int, text: str, attachment: Optional[dict] = None) -> str:
         from .client import _is_fastapi_server_running, FASTAPI_BASE_URL, _server_state
         import httpx
         import backend_fastapi as api
 
         chat = self.get(chat_id)
         if not chat.messages and chat.title == DEFAULT_TITLE:
-            chat.title = text
+            clean_title = (
+                text.replace("📎 **Attached File:**", "")
+                .replace("📹 **Attached Video:**", "")
+                .replace("[Attached File:", "")
+                .strip()
+            )
+            chat.title = clean_title[:32] + ("..." if len(clean_title) > 32 else "")
+
+        att_payload = None
+        if attachment and attachment.get("path"):
+            try:
+                import base64, mimetypes, os
+                fpath = attachment["path"]
+                fname = attachment.get("name") or os.path.basename(fpath)
+                ext = os.path.splitext(fname)[1].lower()
+
+                VIDEO_EXTS = {
+                    ".mp4": "video/mp4", ".mov": "video/quicktime", ".avi": "video/x-msvideo",
+                    ".webm": "video/webm", ".mkv": "video/x-matroska", ".flv": "video/x-flv",
+                    ".wmv": "video/x-ms-wmv", ".3gp": "video/3gpp", ".m4v": "video/x-m4v",
+                    ".mpeg": "video/mpeg", ".mpg": "video/mpeg",
+                }
+                if ext in VIDEO_EXTS:
+                    mime = VIDEO_EXTS[ext]
+                else:
+                    mime, _ = mimetypes.guess_type(fname)
+                    if not mime:
+                        mime = "application/octet-stream"
+
+                fsize = os.path.getsize(fpath) if os.path.exists(fpath) else 0
+                att_payload = {
+                    "filename": fname,
+                    "mime_type": mime,
+                    "file_path": fpath,
+                }
+                # For files up to 25MB, include base64
+                if 0 < fsize <= 25 * 1024 * 1024:
+                    with open(fpath, "rb") as f:
+                        raw_bytes = f.read()
+                    att_payload["file_data_base64"] = base64.b64encode(raw_bytes).decode("utf-8")
+            except Exception as err:
+                print("Error reading attachment:", err)
 
         reply = None
         if _is_fastapi_server_running():
             try:
-                with httpx.Client(timeout=1.0) as client:
+                with httpx.Client(timeout=180.0) as client:
                     resp = client.post(
                         f"{FASTAPI_BASE_URL}/api/assistant/ask",
-                        json={"user_id": CURRENT_USER_ID, "chat_id": chat.id, "question": text},
+                        json={
+                            "user_id": CURRENT_USER_ID,
+                            "chat_id": chat.id,
+                            "question": text,
+                            "attachment": att_payload,
+                        },
                     )
                     if resp.status_code == 200:
                         data = resp.json()
@@ -151,12 +197,20 @@ class ChatStore:
                 _server_state["online"] = False
 
         if reply is None:
+            att_obj = api.FileAttachment(**att_payload) if att_payload else None
             data = api.ask_assistant(
-                api.AskQuestionRequest(user_id=CURRENT_USER_ID, chat_id=chat.id, question=text)
+                api.AskQuestionRequest(
+                    user_id=CURRENT_USER_ID,
+                    chat_id=chat.id,
+                    question=text,
+                    attachment=att_obj,
+                )
             )
             reply = data["answer"]
             chat.id = data["chat_id"]
 
+        from .math_formatter import format_scientific_text
+        reply = format_scientific_text(reply)
         chat.messages.append({"role": "user", "text": text})
         chat.messages.append({"role": "assistant", "text": reply})
         return reply

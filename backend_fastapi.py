@@ -12,16 +12,59 @@ Integrated with SQLite database at database/my_database.db.
 """
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
+import mimetypes
 import os
 import sqlite3
+import time
 from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional
+import httpx
 
 from fastapi import FastAPI, HTTPException, Query, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+
+# Load .env file if available
+_env_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+if os.path.exists(_env_file):
+    try:
+        with open(_env_file, "r", encoding="utf-8") as _f:
+            for _line in _f:
+                _line = _line.strip()
+                if _line and not _line.startswith("#") and "=" in _line:
+                    _k, _v = _line.split("=", 1)
+                    _k, _v = _k.strip(), _v.strip().strip('"').strip("'")
+                    if _k not in os.environ:
+                        os.environ[_k] = _v
+    except Exception:
+        pass
+
+GEMINI_API_KEY = os.environ.get(
+    "GEMINI_API_KEY",
+    "AQ.Ab8RN6LB4N-ZkD4VEGzzyaH2mQu0AyhkPPwVwGJ2_ev3Ga43oA",
+)
+GEMINI_MODELS = [
+    "gemini-3.5-flash-lite",
+    "gemini-3.5-flash",
+    "gemini-flash-lite-latest",
+    "gemini-3.8-flash",
+    "gemini-flash-latest",
+]
+
+try:
+    from pages.backend.math_formatter import format_scientific_text
+except Exception:
+    import sys
+    _p = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pages", "backend")
+    if _p not in sys.path:
+        sys.path.append(_p)
+    from math_formatter import format_scientific_text
+
+# In-memory cache for active file attachments per chat session for multi-turn reasoning
+_chat_attachments: Dict[int, Dict[str, Any]] = {}
 
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "database", "my_database.db")
 
@@ -257,10 +300,18 @@ class MessageCreate(BaseModel):
     content: str
 
 
+class FileAttachment(BaseModel):
+    filename: str
+    mime_type: Optional[str] = None
+    file_data_base64: Optional[str] = None
+    file_path: Optional[str] = None
+
+
 class AskQuestionRequest(BaseModel):
     user_id: int = 1
     chat_id: Optional[int] = None
-    question: str
+    question: str = ""
+    attachment: Optional[FileAttachment] = None
 
 
 class AskQuestionResponse(BaseModel):
@@ -706,15 +757,281 @@ def log_timer_session(req: TimerLogRequest):
 # AI Assistant & Chat Endpoints
 # ============================================================================
 
-def assistant_generate_reply(prompt: str) -> str:
-    """Generate helpful study assistant responses."""
+def format_gemini_contents(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Format messages into strictly alternating user and model contents required by Gemini API."""
+    contents: List[Dict[str, Any]] = []
+    for m in messages:
+        sender_role = m.get("role", "") or m.get("sender", "")
+        role = "model" if sender_role in ("AI", "assistant", "model") else "user"
+        text = (m.get("text") or m.get("content") or "").strip()
+        if not text:
+            continue
+
+        if not contents:
+            if role != "user":
+                continue  # Skip initial model welcome messages so conversation starts with user
+            contents.append({"role": "user", "parts": [{"text": text}]})
+        else:
+            if contents[-1]["role"] == role:
+                contents[-1]["parts"][0]["text"] += f"\n\n{text}"
+            else:
+                contents.append({"role": role, "parts": [{"text": text}]})
+    return contents
+
+
+def upload_file_to_gemini(file_bytes: bytes, filename: str, mime_type: str, api_key: str) -> Optional[str]:
+    """Uploads file or video to Google Generative Language Files API using the user's Gemini API key."""
+    try:
+        upload_endpoint = f"https://generativelanguage.googleapis.com/upload/v1beta/files?key={api_key}"
+        headers = {
+            "X-Goog-Upload-Protocol": "resumable",
+            "X-Goog-Upload-Command": "start",
+            "X-Goog-Upload-Header-Content-Length": str(len(file_bytes)),
+            "X-Goog-Upload-Header-Content-Type": mime_type,
+            "Content-Type": "application/json",
+        }
+        metadata = {"file": {"display_name": filename}}
+        with httpx.Client(timeout=180.0) as client:
+            r1 = client.post(upload_endpoint, headers=headers, json=metadata)
+            if r1.status_code != 200:
+                print(f"Gemini upload start failed: {r1.status_code} {r1.text[:120]}")
+                return None
+            upload_url = r1.headers.get("X-Goog-Upload-URL")
+            if not upload_url:
+                print("Gemini upload URL missing in headers")
+                return None
+            upload_headers = {
+                "X-Goog-Upload-Command": "upload, finalize",
+                "X-Goog-Upload-Offset": "0",
+                "Content-Length": str(len(file_bytes)),
+            }
+            r2 = client.post(upload_url, headers=upload_headers, content=file_bytes)
+            if r2.status_code == 200:
+                file_info = r2.json().get("file", {})
+                file_name = file_info.get("name")
+                file_uri = file_info.get("uri")
+                file_state = file_info.get("state")
+
+                # If the file is still processing (standard for video files), wait until ACTIVE
+                if file_state == "PROCESSING" and file_name:
+                    check_url = f"https://generativelanguage.googleapis.com/v1beta/{file_name}?key={api_key}"
+                    cur_state = file_state
+                    for _ in range(75):  # Poll up to 150 seconds
+                        time.sleep(2.0)
+                        try:
+                            cr = client.get(check_url)
+                            if cr.status_code == 200:
+                                cur_state = cr.json().get("state")
+                                if cur_state == "ACTIVE":
+                                    return file_uri
+                                elif cur_state == "FAILED":
+                                    print(f"Gemini video processing failed: {cr.json().get('error')}")
+                                    return None
+                        except Exception:
+                            pass
+                    if cur_state != "ACTIVE":
+                        print(f"Gemini file still {cur_state} after polling timeout")
+                        return None
+                return file_uri
+    except Exception as e:
+        print(f"Gemini file upload error: {e}")
+    return None
+
+
+def assistant_generate_reply(
+    prompt: str,
+    history: Optional[List[Dict[str, Any]]] = None,
+    user_info: Optional[Dict[str, Any]] = None,
+    attachment: Optional[FileAttachment] = None,
+    chat_id: Optional[int] = None,
+) -> str:
+    """Generate helpful study assistant responses using Google Gemini API with multimodal file and video support."""
+    student_context = ""
+    if user_info:
+        name = user_info.get("name") or "Student"
+        major = user_info.get("major")
+        school = user_info.get("school")
+        parts = [f"Student: {name}"]
+        if major:
+            parts.append(f"Major: {major}")
+        if school:
+            parts.append(f"School: {school}")
+        student_context = " Context: " + ", ".join(parts) + "."
+
+    system_instruction = (
+        "You are Arcadia, an intelligent, patient, and highly effective AI study assistant."
+        f"{student_context} "
+        "Your goal is to help students learn deeply, prepare for exams, structure study plans, "
+        "and master academic concepts. When files, images, documents, code, or videos are uploaded, "
+        "thoroughly inspect their contents (including video scenes, lecture slides, audio/speech, diagrams, and code) "
+        "and provide detailed, clear, and pedagogically sound explanations with timestamps where helpful. "
+        "Format your responses clearly with clean markdown, headings, bullet points, and code blocks where helpful. "
+        "IMPORTANT SCIENTIFIC & MATHEMATICAL NOTATION RULES: The user interface renders standard Markdown and cannot parse raw LaTeX delimiters like $...$ or $$...$$ with unrendered commands like \\frac, \\mathcal, or \\Delta. "
+        "Always format all mathematical, physical, and scientific formulas, equations, and variables in clean, beautifully readable Unicode mathematical typography "
+        "(e.g. ℰ = −N · (ΔΦ_B / Δt), Δt, ΔΦ_B, E = mc², λ = h / p, F = ma, v = v₀ + at, √x, π, θ, Ω, ±, ≤, ≥, →). "
+        "For key standalone formulas or physical laws, place them on their own line styled cleanly (e.g. `ℰ = −N · (ΔΦ_B / Δt)`) so they display with crystal clarity."
+    )
+
+    # Process attachment if provided or check active session attachment
+    attachment_parts = []
+    active_cached = _chat_attachments.get(chat_id) if chat_id else None
+
+    if attachment:
+        filename = getattr(attachment, "filename", "file") or "file"
+        ext = os.path.splitext(filename)[1].lower()
+
+        VIDEO_EXTS = {
+            ".mp4": "video/mp4", ".mov": "video/quicktime", ".avi": "video/x-msvideo",
+            ".webm": "video/webm", ".mkv": "video/x-matroska", ".flv": "video/x-flv",
+            ".wmv": "video/x-ms-wmv", ".3gp": "video/3gpp", ".m4v": "video/x-m4v",
+            ".mpeg": "video/mpeg", ".mpg": "video/mpeg",
+        }
+        mime_type = getattr(attachment, "mime_type", None)
+        if ext in VIDEO_EXTS:
+            mime_type = VIDEO_EXTS[ext]
+        elif not mime_type or mime_type == "application/octet-stream":
+            guessed, _ = mimetypes.guess_type(filename)
+            mime_type = guessed or "application/octet-stream"
+
+        file_bytes = None
+        b64 = getattr(attachment, "file_data_base64", None)
+        fpath = getattr(attachment, "file_path", None)
+        if b64:
+            try:
+                file_bytes = base64.b64decode(b64)
+            except Exception:
+                pass
+        elif fpath and os.path.exists(fpath):
+            try:
+                with open(fpath, "rb") as f:
+                    file_bytes = f.read()
+            except Exception:
+                pass
+
+        if file_bytes:
+            TEXT_EXTS = {
+                ".txt", ".py", ".c", ".cpp", ".h", ".hpp", ".java", ".cs", ".go", ".rs",
+                ".js", ".jsx", ".ts", ".tsx", ".html", ".htm", ".css", ".scss", ".json",
+                ".xml", ".yaml", ".yml", ".md", ".markdown", ".csv", ".tsv", ".sql",
+                ".sh", ".bat", ".ps1", ".r", ".m", ".kt", ".swift", ".dart", ".rb", ".php"
+            }
+            is_text = ext in TEXT_EXTS or (mime_type and (mime_type.startswith("text/") or mime_type == "application/json"))
+            if is_text:
+                try:
+                    text_content = file_bytes.decode("utf-8", errors="replace")
+                    attachment_parts.append({
+                        "text": f"[Uploaded File: {filename}]\n```{ext.lstrip('.')}\n{text_content}\n```"
+                    })
+                except Exception:
+                    pass
+
+            if not attachment_parts:
+                api_key = os.environ.get("GEMINI_API_KEY", GEMINI_API_KEY)
+                file_uri = upload_file_to_gemini(file_bytes, filename, mime_type, api_key)
+                if file_uri:
+                    if chat_id:
+                        _chat_attachments[chat_id] = {
+                            "file_uri": file_uri,
+                            "mime_type": mime_type,
+                            "filename": filename,
+                            "file_path": fpath,
+                        }
+                    attachment_parts.append({
+                        "file_data": {
+                            "file_uri": file_uri,
+                            "mime_type": mime_type,
+                        }
+                    })
+                elif len(file_bytes) <= 20 * 1024 * 1024:
+                    b64_data = base64.b64encode(file_bytes).decode("utf-8")
+                    attachment_parts.append({
+                        "inline_data": {
+                            "mime_type": mime_type,
+                            "data": b64_data,
+                        }
+                    })
+    elif active_cached and active_cached.get("file_uri"):
+        # Reuse active file from previous turn in this chat
+        attachment_parts.append({
+            "file_data": {
+                "file_uri": active_cached["file_uri"],
+                "mime_type": active_cached.get("mime_type", "video/mp4"),
+            }
+        })
+
+    if history:
+        contents = format_gemini_contents(history)
+    else:
+        contents = [{"role": "user", "parts": [{"text": prompt}]}]
+
+    if not contents:
+        contents = [{"role": "user", "parts": [{"text": prompt}]}]
+
+    # If attachment parts are present, attach them to the last user turn
+    if attachment_parts:
+        if contents[-1]["role"] == "user":
+            contents[-1]["parts"] = attachment_parts + contents[-1]["parts"]
+        else:
+            contents.append({"role": "user", "parts": attachment_parts + [{"text": prompt}]})
+
+    payload = {
+        "contents": contents,
+        "system_instruction": {"parts": [{"text": system_instruction}]},
+        "generationConfig": {
+            "temperature": 0.7,
+            "maxOutputTokens": 2048,
+        },
+    }
+
+    api_key = os.environ.get("GEMINI_API_KEY", GEMINI_API_KEY)
+    last_error = None
+
+    for model in GEMINI_MODELS:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+        try:
+            with httpx.Client(timeout=120.0) as client:
+                resp = client.post(url, json=payload)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    candidates = data.get("candidates", [])
+                    if candidates and "content" in candidates[0]:
+                        parts = candidates[0]["content"].get("parts", [])
+                        text_parts = [
+                            p.get("text", "") for p in parts
+                            if "text" in p and not p.get("thought", False)
+                        ]
+                        raw_reply = "".join(text_parts).strip()
+                        if raw_reply:
+                            return format_scientific_text(raw_reply)
+                elif resp.status_code in (404, 503, 429):
+                    last_error = f"{model} returned {resp.status_code}"
+                    continue
+                else:
+                    last_error = f"{model} returned {resp.status_code}: {resp.text[:120]}"
+        except Exception as e:
+            last_error = f"{model} error: {e}"
+            continue
+
+    # Graceful fallback if Gemini API is unreachable (e.g. offline)
+    if attachment:
+        fname = getattr(attachment, "filename", "document")
+        fallback_msg = (
+            f"I have received your file **{fname}**.\n\n"
+            "• **File Status**: Successfully uploaded and received by Arcadia.\n"
+            "• **Summary**: When connected to Gemini API, the assistant analyzes diagrams, lecture notes, PDFs, and code directly.\n"
+            + (f"\n\n*(Gemini notice: {last_error})*" if last_error else "")
+        )
+        return format_scientific_text(fallback_msg)
+
     prompt_lower = prompt.lower()
+    fallback_note = "\n\n*(Note: Gemini service is currently offline or unreachable)*"
     if "summarize" in prompt_lower:
         return (
             "Here is a concise summary of your material:\n"
             "• Core Concept: Highlights essential formulas, definitions, and principles.\n"
             "• Key Takeaway: Focus on foundational axioms and practical problem-solving.\n"
             "• Review Tip: Use active recall flashcards to reinforce long-term retention."
+            + fallback_note
         )
     elif "plan" in prompt_lower:
         return (
@@ -723,16 +1040,16 @@ def assistant_generate_reply(prompt: str) -> str:
             "2. 5 min: Short rest break.\n"
             "3. 25 min: Practice problems & Flashcard deck review.\n"
             "4. 10 min: Summarize key mistakes."
+            + fallback_note
         )
     elif "question" in prompt_lower or "practice" in prompt_lower or "quiz" in prompt_lower:
         return (
             "Practice Questions for Active Recall:\n"
-            "1. Explain the difference between mutable and immutable types in Python.\n"
-            "2. How does Newton's Second Law relate net force, mass, and acceleration?\n"
-            "3. What is the time complexity of binary search on a sorted array?"
+            "1. Explain the primary principles of this topic in your own words.\n"
+            "2. How does this concept apply to real-world problem solving?\n"
+            "3. What are the common edge cases or pitfalls to watch out for?"
+            + fallback_note
         )
-    elif "e=mc" in prompt_lower:
-        return "E = mc² expresses mass-energy equivalence: Energy (E) equals mass (m) multiplied by the speed of light squared (c²)."
     else:
         return (
             f"Great question about “{prompt}”! "
@@ -740,6 +1057,7 @@ def assistant_generate_reply(prompt: str) -> str:
             "1. Break the concept into fundamental definitions.\n"
             "2. Create flashcards in the Flashcards tab for active recall.\n"
             "3. Schedule a 25-minute focus session in the Study Timer."
+            + (f"\n\n*(Gemini notice: {last_error})*" if last_error else "")
         )
 
 
@@ -748,7 +1066,7 @@ def list_chats(user_id: int = 1):
     with get_db() as conn:
         chats = conn.execute(
             "SELECT chat_id, user_id, strftime('%Y-%m-%dT%H:%M:%SZ', created_at) as created_at "
-            "FROM Chats WHERE user_id = ? ORDER BY chat_id ASC",
+            "FROM Chats WHERE user_id = ? ORDER BY chat_id DESC",
             (user_id,),
         ).fetchall()
         result = []
@@ -846,7 +1164,29 @@ def ask_assistant(req: AskQuestionRequest):
             "INSERT INTO Messages (chat_id, sender, content) VALUES (?, 'User', ?)",
             (chat_id, req.question),
         )
-        answer = assistant_generate_reply(req.question)
+        conn.commit()
+
+        # Query recent message history for multi-turn context
+        history_rows = conn.execute(
+            "SELECT sender, content FROM Messages WHERE chat_id = ? ORDER BY message_id ASC",
+            (chat_id,),
+        ).fetchall()
+        history = [{"sender": r["sender"], "content": r["content"]} for r in history_rows]
+
+        # Fetch student profile for personalized context
+        user_row = conn.execute(
+            "SELECT name, school, major, year FROM Users WHERE user_id = ?",
+            (req.user_id,),
+        ).fetchone()
+        user_info = dict(user_row) if user_row else None
+
+        answer = assistant_generate_reply(
+            req.question,
+            history=history,
+            user_info=user_info,
+            attachment=req.attachment,
+            chat_id=chat_id,
+        )
         conn.execute(
             "INSERT INTO Messages (chat_id, sender, content) VALUES (?, 'AI', ?)",
             (chat_id, answer),
