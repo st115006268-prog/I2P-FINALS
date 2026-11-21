@@ -411,6 +411,7 @@ class ArcadiaApp:
                             tool("▧", "Attach file (image, PDF, code, doc)", on_click=lambda e: self._pick_file(e)),
                             tool("▶", "Attach video (MP4, MOV, WEBM, MKV)", "#dc2626", on_click=lambda e: self._pick_file(e, ft.FilePickerFileType.VIDEO)),
                             tool("♩", "Audio recording", TEAL, on_click=lambda e: self._pick_file(e, ft.FilePickerFileType.AUDIO)),
+                            tool("🔑", "Configure Gemini API Key", "#d97706", on_click=lambda e: self._show_api_key_dialog(e)),
                             ft.Container(expand=True),
                             clickable(self.send_btn),
                         ],
@@ -521,6 +522,87 @@ class ArcadiaApp:
             self.page.update()
 
     # ------------------------------------------------------------ actions
+    def _show_api_key_dialog(self, e=None) -> None:
+        import os
+        import backend_fastapi as api
+
+        current_key = os.environ.get("GEMINI_API_KEY", getattr(api, "GEMINI_API_KEY", ""))
+        key_input = ft.TextField(
+            value=current_key,
+            label="Gemini API Key",
+            hint_text="AIzaSy... or paste key here",
+            password=True,
+            can_reveal_password=True,
+            width=430,
+            border_color=TEAL,
+            text_size=14,
+        )
+
+        def save_key(ev):
+            val = (key_input.value or "").strip()
+            if not val:
+                key_input.error_text = "API Key cannot be empty"
+                if key_input.page:
+                    key_input.update()
+                return
+            success = api.save_gemini_api_key(val)
+            dlg.open = False
+            if self.page:
+                self.page.update()
+                if success:
+                    self.page.snack_bar = ft.SnackBar(
+                        ft.Text("Gemini API Key saved successfully!", color=WHITE),
+                        bgcolor=TEAL,
+                    )
+                    self.page.snack_bar.open = True
+                    self.page.update()
+
+        def close_dlg(ev):
+            dlg.open = False
+            if self.page:
+                self.page.update()
+
+        dlg = ft.AlertDialog(
+            title=ft.Row([
+                ft.Text("🔑", size=20),
+                ft.Text("Gemini API Key", size=18, weight=ft.FontWeight.W_600, color=INK),
+            ], spacing=8),
+            content=ft.Container(
+                width=450,
+                content=ft.Column(
+                    [
+                        ft.Text(
+                            "Arcadia uses Google Gemini to answer questions, explain concepts, and analyze files.",
+                            size=13, color=MUTED,
+                        ),
+                        ft.Container(height=6),
+                        key_input,
+                        ft.Container(height=4),
+                        ft.Text(
+                            "Get a free API key at Google AI Studio: aistudio.google.com/app/apikey",
+                            size=12, color=TEAL, italic=True,
+                        ),
+                    ],
+                    tight=True,
+                    spacing=6,
+                ),
+            ),
+            actions=[
+                ft.TextButton("Cancel", on_click=close_dlg),
+                ft.FilledButton(
+                    "Save Key",
+                    bgcolor=TEAL,
+                    color=WHITE,
+                    on_click=save_key,
+                ),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+        if self.page:
+            self.page.overlay.append(dlg)
+            dlg.open = True
+            self.page.update()
+
     def _new_chat(self, e=None) -> None:
         self.current = self.store.new_chat()
         backend.CURRENT_CHAT_ID = self.current.id

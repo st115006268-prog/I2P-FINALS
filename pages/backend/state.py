@@ -214,3 +214,7 @@ class ChatStore:
         chat.messages.append({"role": "user", "text": text})
         chat.messages.append({"role": "assistant", "text": reply})
         return reply
+
+    def save_api_key(self, key: str) -> bool:
+        import backend_fastapi as api
+        return api.save_gemini_api_key(key)

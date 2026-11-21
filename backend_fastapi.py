@@ -27,25 +27,66 @@ from fastapi import FastAPI, HTTPException, Query, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-# Load .env file if available
-_env_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
-if os.path.exists(_env_file):
-    try:
-        with open(_env_file, "r", encoding="utf-8") as _f:
-            for _line in _f:
-                _line = _line.strip()
-                if _line and not _line.startswith("#") and "=" in _line:
-                    _k, _v = _line.split("=", 1)
-                    _k, _v = _k.strip(), _v.strip().strip('"').strip("'")
-                    if _k not in os.environ:
-                        os.environ[_k] = _v
-    except Exception:
-        pass
+# Load .env file if available across project directory and current working directory
+def _load_env_vars():
+    for _d in [
+        os.path.dirname(os.path.abspath(__file__)),
+        os.getcwd(),
+        os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")),
+    ]:
+        _env = os.path.join(_d, ".env")
+        if os.path.exists(_env):
+            try:
+                with open(_env, "r", encoding="utf-8") as _f:
+                    for _line in _f:
+                        _line = _line.strip()
+                        if _line and not _line.startswith("#") and "=" in _line:
+                            _k, _v = _line.split("=", 1)
+                            _k, _v = _k.strip(), _v.strip().strip('"').strip("'")
+                            if _v:
+                                os.environ[_k] = _v
+            except Exception:
+                pass
+            break
 
-GEMINI_API_KEY = os.environ.get(
-    "GEMINI_API_KEY",
-    "AQ.Ab8RN6LB4N-ZkD4VEGzzyaH2mQu0AyhkPPwVwGJ2_ev3Ga43oA",
-)
+_load_env_vars()
+
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+
+
+def save_gemini_api_key(new_key: str) -> bool:
+    """Saves new Gemini API key to .env file and updates runtime environment."""
+    global GEMINI_API_KEY
+    clean_key = (new_key or "").strip().strip('"').strip("'")
+    if not clean_key:
+        return False
+    GEMINI_API_KEY = clean_key
+    os.environ["GEMINI_API_KEY"] = clean_key
+
+    for env_path in [
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"),
+        os.path.join(os.getcwd(), ".env"),
+    ]:
+        try:
+            lines = []
+            replaced = False
+            if os.path.exists(env_path):
+                with open(env_path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        if line.strip().startswith("GEMINI_API_KEY="):
+                            lines.append(f"GEMINI_API_KEY={clean_key}\n")
+                            replaced = True
+                        else:
+                            lines.append(line)
+            if not replaced:
+                lines.append(f"\nGEMINI_API_KEY={clean_key}\n")
+            with open(env_path, "w", encoding="utf-8") as f:
+                f.writelines(lines)
+        except Exception as e:
+            print(f"Error saving to {env_path}: {e}")
+    return True
+
+
 GEMINI_MODELS = [
     "gemini-3.5-flash-lite",
     "gemini-3.5-flash",
@@ -984,6 +1025,16 @@ def assistant_generate_reply(
     }
 
     api_key = os.environ.get("GEMINI_API_KEY", GEMINI_API_KEY)
+    if not api_key or api_key.strip() in ("", "your_gemini_api_key_here"):
+        return (
+            "⚠️ **Gemini API Key Required**\n\n"
+            "Arcadia needs a Google Gemini API key to answer questions, analyze notes, and explain videos.\n\n"
+            "**Quick Setup (Free & takes 30 seconds):**\n"
+            "1. Generate your free key at **[Google AI Studio](https://aistudio.google.com/app/apikey)**.\n"
+            "2. Click the **🔑 Key** icon on the bottom toolbar to enter your key (or add `GEMINI_API_KEY=...` in your `.env` file).\n"
+            "3. Once saved, you can immediately chat and ask questions!"
+        )
+
     last_error = None
 
     for model in GEMINI_MODELS:
@@ -1003,6 +1054,19 @@ def assistant_generate_reply(
                         raw_reply = "".join(text_parts).strip()
                         if raw_reply:
                             return format_scientific_text(raw_reply)
+                elif resp.status_code == 401:
+                    last_error = f"{model} returned 401 Unauthorized"
+                    return (
+                        "⚠️ **Gemini API Key Invalid or Revoked (Error 401)**\n\n"
+                        "Google rejected the API key because it has been invalidated.\n\n"
+                        "💡 **Why did this happen?**\n"
+                        "When an API key is committed or pushed to GitHub, GitHub's Secret Scanning automatically "
+                        "detects it and notifies Google, which immediately revokes the key for your security.\n\n"
+                        "**How to fix in 30 seconds:**\n"
+                        "1. Go to **[Google AI Studio](https://aistudio.google.com/app/apikey)** and click **'Create API key'** (it's 100% free).\n"
+                        "2. Click the **🔑 Key** button on the bottom toolbar in Arcadia and paste your new key.\n"
+                        "3. Done! The new key will be saved safely into `.env` (which is now protected by `.gitignore`)."
+                    )
                 elif resp.status_code in (404, 503, 429):
                     last_error = f"{model} returned {resp.status_code}"
                     continue
