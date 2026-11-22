@@ -14,6 +14,10 @@ from pages import (
 )
 
 
+# Cross-fade duration (ms) when switching pages.
+PAGE_FADE_MS = 220
+
+
 async def main(page: ft.Page):
     page.title = "ARCADIA"
     page.theme_mode = ft.ThemeMode.LIGHT
@@ -34,10 +38,79 @@ async def main(page: ft.Page):
     except Exception:
         pass
 
-    async def route_change(e):
+    # One persistent View for the whole app. Page content is cross-faded inside it with
+    # an AnimatedSwitcher, instead of replacing page.views (which makes Flutter play its
+    # own route animation with the old and new views overlapping / zooming).
+    switcher = ft.AnimatedSwitcher(
+        content=ft.Container(expand=True),
+        transition=ft.AnimatedSwitcherTransition.FADE,
+        duration=PAGE_FADE_MS,
+        reverse_duration=PAGE_FADE_MS,
+        expand=True,
+    )
+    shell = ft.View(
+        route="/",
+        padding=0,
+        spacing=0,
+        bgcolor="#F4F5F7",
+        controls=[switcher],
+    )
+
+    def wrap_page_content(view: ft.View, route: str) -> ft.Control:
+        """Turn a page's ft.View into a keyed container the switcher can animate."""
+        return ft.Container(
+            key=route,  # a new key per route is what makes AnimatedSwitcher animate
+            expand=True,
+            bgcolor=getattr(view, "bgcolor", None) or "#F4F5F7",
+            padding=getattr(view, "padding", 0) or 0,
+            content=ft.Column(list(view.controls), spacing=0, expand=True),
+        )
+
+    def cleanup_previous_view():
+        """Drop everything the previous page left attached to the page itself.
+
+        Overlays (FilePickers, dialogs) and sidebar listeners live outside the view,
+        so swapping content does not remove them. Without this they pile up on every
+        navigation and can leave stale dialogs / duplicate pickers on the next page.
+        """
+        page.on_resize = None
         try:
-            page.on_resize = None
-            route = page.route or "/"
+            page.overlay.clear()
+        except Exception:
+            pass
+        try:
+            page.dialog = None
+        except Exception:
+            pass
+        try:
+            from pages import sidebar as _sidebar
+            _sidebar._SIDEBAR_LISTENERS.clear()
+        except Exception:
+            pass
+
+    def build_error_content(error_trace: str) -> ft.Control:
+        return ft.Container(
+            key="/error",
+            expand=True,
+            padding=24,
+            content=ft.Column(
+                [
+                    ft.Text("ERROR FOUND!", color=ft.Colors.RED, size=24, weight=ft.FontWeight.BOLD),
+                    ft.Container(
+                        content=ft.Text(error_trace, selectable=True, size=12),
+                        bgcolor=ft.Colors.GREY_200,
+                        padding=15,
+                        border_radius=8,
+                    ),
+                ],
+                scroll=ft.ScrollMode.AUTO,
+            ),
+        )
+
+    async def route_change(e):
+        route = page.route or "/"
+        try:
+            cleanup_previous_view()
             if route == "/":
                 new_view = login.get_view(page)
             elif route == "/ai-assistant":
@@ -53,46 +126,27 @@ async def main(page: ft.Page):
             elif route == "/profile":
                 new_view = profile.get_view(page)
             else:
+                route = "/"
                 new_view = login.get_view(page)
 
             if inspect.isawaitable(new_view):
                 new_view = await new_view
 
-            page.views.clear()
-            page.views.append(new_view)
+            switcher.content = wrap_page_content(new_view, route)
         except Exception:
-            error_trace = traceback.format_exc()
-            page.views.clear()
-            page.views.append(
-                ft.View(
-                    route="/error",
-                    controls=[
-                        ft.Text(
-                            "ERROR FOUND!",
-                            color=ft.Colors.RED,
-                            size=24,
-                            weight=ft.FontWeight.BOLD,
-                        ),
-                        ft.Container(
-                            content=ft.Text(error_trace, selectable=True, size=12),
-                            bgcolor=ft.Colors.GREY_200,
-                            padding=15,
-                            border_radius=8,
-                        ),
-                    ],
-                )
-            )
+            switcher.content = build_error_content(traceback.format_exc())
+
+        shell.bgcolor = getattr(switcher.content, "bgcolor", None) or "#F4F5F7"
         page.update()
 
     async def view_pop(e):
-        if len(page.views) > 1:
-            page.views.pop()
-            page.go(page.views[-1].route)
-        else:
-            page.go("/")
+        page.go("/")
 
     page.on_route_change = route_change
     page.on_view_pop = view_pop
+
+    page.views.clear()
+    page.views.append(shell)
 
     if not page.route:
         page.route = "/"
